@@ -173,3 +173,111 @@ def get_api_key() -> str:
     if not key:
         raise RuntimeError("AUDIO_API_KEY 环境变量未设置")
     return key
+
+
+def download_audio_from_url(
+    url: str,
+    output_path: str | Path | None = None,
+    format: str = "mp3",
+    progress: bool = False,
+) -> Path:
+    """从网络链接下载音频（YouTube/Bilibili）。
+
+    Args:
+        url: 视频链接（YouTube 或 Bilibili）。
+        output_path: 输出路径，默认在当前目录生成临时文件。
+        format: 输出格式（mp3/m4a/flac/wav），默认 mp3。
+        progress: 是否显示下载进度，默认 False。
+
+    Returns:
+        下载的音频文件路径。
+
+    Raises:
+        AudioLoaderError: 下载失败。
+
+    Examples:
+        >>> path = download_audio_from_url("https://www.youtube.com/watch?v=...")
+        >>> path = download_audio_from_url("https://www.bilibili.com/video/BV...", format="m4a")
+    """
+    import yt_dlp
+
+    if output_path is None:
+        output_path = Path(f"temp_audio_{os.getpid()}.{format}")
+    output_path = Path(output_path)
+
+    ydl_opts: dict = {
+        "format": "bestaudio/best",
+        "outtmpl": str(output_path.with_suffix("")),
+        "quiet": not progress,
+    }
+
+    if format != "webm":
+        ydl_opts["postprocessors"] = [
+            {
+                "key": "FFmpegExtractAudio",
+                "preferredcodec": format,
+            }
+        ]
+
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            ydl.download([url])
+    except Exception as e:
+        raise AudioLoaderError(f"下载失败: {e}") from e
+
+    actual_path = output_path.with_suffix(f".{format}")
+    if not actual_path.exists():
+        raise AudioLoaderError(f"音频文件未生成: {actual_path}")
+    return actual_path
+
+
+def load_audio_from_url(url: str, sr: int = 44100) -> AudioData:
+    """从网络链接加载音频（YouTube/Bilibili）。
+
+    直接下载并加载到内存，无需保存本地文件。
+
+    Args:
+        url: 视频链接（YouTube 或 Bilibili）。
+        sr: 目标采样率（Hz），默认 44100Hz。
+
+    Returns:
+        AudioData 对象，包含音频样本、采样率和时长。
+
+    Raises:
+        AudioLoaderError: 下载或加载失败。
+
+    Examples:
+        >>> audio = load_audio_from_url("https://www.youtube.com/watch?v=...")
+        >>> print(audio.duration)
+        245.3
+    """
+    import yt_dlp
+    import tempfile
+
+    ydl_opts: dict = {
+        "format": "bestaudio/best",
+        "quiet": True,
+    }
+
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+            if info is None:
+                raise AudioLoaderError("无法获取视频信息")
+
+            with tempfile.TemporaryDirectory() as tmpdir:
+                ydl_opts["outtmpl"] = str(Path(tmpdir) / "audio")
+                ydl_opts["postprocessors"] = [
+                    {"key": "FFmpegExtractAudio", "preferredcodec": "wav"}
+                ]
+                with yt_dlp.YoutubeDL(ydl_opts) as ydl2:
+                    ydl2.download([url])
+
+                audio_files = list(Path(tmpdir).glob("audio.wav"))
+                if not audio_files:
+                    raise AudioLoaderError("音频文件未生成")
+                return load_audio(audio_files[0], sr=sr)
+    except AudioLoaderError:
+        raise
+    except Exception as e:
+        raise AudioLoaderError(f"加载失败: {e}") from e

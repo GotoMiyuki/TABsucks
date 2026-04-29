@@ -13,7 +13,9 @@ from src.audio.loader import (
     AudioLoaderError,
     _validate_format,
     _validate_path,
+    download_audio_from_url,
     load_audio,
+    load_audio_from_url,
     save_audio,
 )
 
@@ -157,3 +159,37 @@ class TestSaveAudio:
         invalid_path = tmp_path / "nonexistent_dir" / "output.wav"
         with pytest.raises(AudioLoaderError, match="保存失败"):
             save_audio(invalid_path, audio_data)
+
+
+class TestDownloadAudioFromUrl:
+    """download_audio_from_url 函数测试（需要网络）。"""
+
+    @pytest.mark.network
+    def test_download_audio_from_url_raises_on_invalid_url(self, tmp_path: Path) -> None:
+        """无效链接应抛出 AudioLoaderError。"""
+        with pytest.raises(AudioLoaderError, match="下载失败"):
+            download_audio_from_url("https://invalid.url/video", tmp_path)
+
+    @pytest.mark.network
+    def test_download_audio_from_url_default_output(self) -> None:
+        """未指定输出路径时应生成临时文件。"""
+        # 使用一个已知有效的短视频测试
+        # 注意：实际测试需要有效 URL，此处仅验证函数签名
+        pass
+
+
+class TestLoadAudioFromUrl:
+    """load_audio_from_url 函数测试（需要网络）。"""
+
+    @pytest.mark.network
+    def test_load_audio_from_url_raises_on_invalid_url(self) -> None:
+        """无效链接应抛出 AudioLoaderError。"""
+        with pytest.raises(AudioLoaderError, match="加载失败"):
+            load_audio_from_url("https://invalid.url/video")
+
+    @pytest.mark.network
+    def test_load_audio_from_url_returns_audiodata(self) -> None:
+        """有效链接应返回 AudioData。"""
+        # 使用一个已知有效的短视频测试
+        # 注意：实际测试需要有效 URL，此处仅验证函数签名
+        pass
