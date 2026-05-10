@@ -1,10 +1,19 @@
+from __future__ import annotations
+
+import torch
 import os
 import tempfile
-# ... 其他导入
 
+
+# ... 其他导入
+#需要自行安装pytorch onnxruntime-gpu 还有ffmpeg
 # ================= 硬件控制开关 =================
+#########强制本地加载
+os.environ["HF_HUB_OFFLINE"] = "0"  
+#设置下载模型的镜像网站
+#os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
 # 如果想强制只用 CPU，取消下面这行的注释：
-# os.environ["CUDA_VISIBLE_DEVICES"] = "-1" 
+#os.environ["CUDA_VISIBLE_DEVICES"] = "-1" 
 
 # 如果你的电脑有两张显卡，想强制它只用第二张（索引从0开始）：
 # os.environ["CUDA_VISIBLE_DEVICES"] = "1"
@@ -12,7 +21,7 @@ import tempfile
 
 """音轨分离模块，使用 6 轨版 BS-RoFormer 模型。"""
 
-from __future__ import annotations
+
 
 import os
 import tempfile
@@ -68,7 +77,7 @@ class SeparatorError(Exception):
     pass
 
 class Separator:
-    def __init__(self, model_name: str = "BS-Roformer-SW.yaml") -> None:
+    def __init__(self, model_name: str = "BS-Roformer-SW.ckpt") -> None:
         self.model_name = model_name
         self._separator_instance = None # 延迟加载实例，避免启动软件时卡死
 
@@ -184,3 +193,23 @@ class Separator:
         from src.audio.loader import load_audio
         audio = load_audio(path)
         return self.separate(audio)
+    
+
+
+
+
+if __name__ == "__main__":
+
+    #################test code#################
+    s = Separator()
+
+    a = s.separate_file("F:/music/test.wav")
+    output_dir = "F:/music/separated_tracks"
+    os.makedirs(output_dir, exist_ok=True)
+
+    for track_id in TrackId:
+        track_data = a.get_track(track_id)
+        filename = f"{track_id.value}.wav"
+        filepath = os.path.join(output_dir, filename)
+        sf.write(filepath, track_data, a.sample_rate)
+        print(f"已保存: {filepath}")
