@@ -122,12 +122,12 @@ class Separator:
             # 3. 初始化结果字典，用全零数组垫底
             # 万一模型少吐了某个轨，这里也有个静音轨道顶着，不会让后续和弦分析报错
             tracks_data = {
-                "vocals": np.zeros(n_samples),
-                "drums": np.zeros(n_samples),
-                "bass": np.zeros(n_samples),
-                "piano": np.zeros(n_samples),
-                "guitar": np.zeros(n_samples),
-                "other": np.zeros(n_samples),
+                "vocals": np.zeros((n_samples, 2)),
+                "drums": np.zeros((n_samples, 2)),
+                "bass": np.zeros((n_samples, 2)),
+                "piano": np.zeros((n_samples, 2)),
+                "guitar": np.zeros((n_samples, 2)),
+                "other": np.zeros((n_samples, 2)),
             }
 
             # 4. 遍历提取模型吐出来的每个音频文件
@@ -216,3 +216,10 @@ class Separator:
         audio = load_audio(path)
         return self.separate(audio)
     
+
+
+
+
+
+
+
