@@ -139,7 +139,8 @@ class Separator:
                 # 读取分离后的音频数据
                 data, _ = sf.read(path)
                 
-                # 如果模型输出的是立体声 (shape: samples, channels)，我们强转为单声道
+                ##############注释内容为压缩成单声道实现###############
+                """# 如果模型输出的是立体声 (shape: samples, channels)，我们强转为单声道
                 if data.ndim > 1:
                     data = data.mean(axis=1) 
                 
@@ -150,7 +151,28 @@ class Separator:
                 if len(data) > n_samples:
                     data = data[:n_samples] # 截断多余的尾巴
                 elif len(data) < n_samples:
-                    data = np.pad(data, (0, n_samples - len(data))) # 补零填满
+                    data = np.pad(data, (0, n_samples - len(data))) # 补零填满"""
+                #####################接下里为双声道保留######################
+                # 获取当前音频的采样点数 (第 0 个维度)
+                current_samples = data.shape[0]
+                
+                # 【修改对齐逻辑，兼容 1D 和 2D 数组】
+                if current_samples > n_samples:
+                    # 截断超出部分（如果是 2D，要保留所有通道）
+                    if data.ndim == 1:
+                        data = data[:n_samples]
+                    else:
+                        data = data[:n_samples, :] 
+                        
+                elif current_samples < n_samples:
+                    # 补零填满
+                    pad_length = n_samples - current_samples
+                    if data.ndim == 1:
+                        data = np.pad(data, (0, pad_length))
+                    else:
+                        # 对于 2D 数组，只在时间轴(第0维)补零，通道轴(第1维)不补
+                        data = np.pad(data, ((0, pad_length), (0, 0)))
+
                 
                 # 5. 根据文件名包含的关键词，智能归类到对应的音轨槽位里
                 lower_name = filename.lower()
