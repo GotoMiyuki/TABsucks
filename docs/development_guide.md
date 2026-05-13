@@ -94,6 +94,7 @@ git checkout -b feature/FR-01-audio-input
 - [ ] 所有函数标注类型提示（类型提示 → § 基础概念/类型提示）
 - [ ] 禁止硬编码 API Key，使用环境变量（环境变量 → § 基础概念/环境变量）
 - [ ] 复杂逻辑添加 docstring（说明 *why*，不说明 *what*）
+- [ ] 在 `docs/development_logs/` 目录下撰写开发日志，记录设计决策和实现细节
 - [ ] 运行 `black . && ruff check .` 格式化后再提交
 
 **Python 示例**（完整模块写法 → § 代码示例/Python）：

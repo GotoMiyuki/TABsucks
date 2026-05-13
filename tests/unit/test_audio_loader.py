@@ -13,7 +13,9 @@ from src.audio.loader import (
     AudioLoaderError,
     _validate_format,
     _validate_path,
+    download_audio_from_url,
     load_audio,
+    load_audio_from_url,
     save_audio,
 )
 
@@ -56,14 +58,15 @@ class TestAudioData:
         assert data.n_samples == 4
 
     def test_immutable(self) -> None:
-        """AudioData 创建后不可修改。"""
+        """AudioData 字段重新赋值应被 frozen 阻止。"""
         data = AudioData(
             samples=np.array([0.1]),
             sample_rate=44100,
             duration=1.0,
         )
+        # frozen=True 阻止 field 重新赋值，但 in-place 修改 numpy 数组本身无法阻止
         with pytest.raises(Exception):  # frozen dataclass raises FrozenInstanceError
-            data.samples[0] = 0.5  # type: ignore
+            data.samples = np.array([0.5])  # type: ignore
 
 
 class TestValidatePath:
@@ -115,9 +118,7 @@ class TestLoadAudio:
         with pytest.raises(AudioLoaderError, match="文件不存在"):
             load_audio(missing)
 
-    def test_load_audio_raises_on_unsupported_format(
-        self, tmp_path: Path
-    ) -> None:
+    def test_load_audio_raises_on_unsupported_format(self, tmp_path: Path) -> None:
         """不支持的格式时抛出 AudioLoaderError。"""
         dummy = tmp_path / "video.avi"
         dummy.touch()
@@ -126,10 +127,35 @@ class TestLoadAudio:
 
     def test_load_audio_respects_sample_rate(self, tmp_path: Path) -> None:
         """load_audio 应尊重指定的采样率。"""
-        # 创建一个临时有效音频文件
-        # 注意：librosa.load 可以加载任意 raw 数据（即使不是真实音频）
-        # 此处测试验证采样率参数传递正确
-        pass  # 需真实音频文件，暂用 skip
+        audio_data = AudioData(
+            samples=np.array([0.1, 0.2, 0.3], dtype=np.float32),
+            sample_rate=44100,
+            duration=1.0,
+        )
+        test_file = tmp_path / "test.wav"
+        save_audio(test_file, audio_data)
+
+        loaded = load_audio(test_file, sr=22050)
+        assert loaded.sample_rate == 22050
+
+    def test_load_audio_sine_wave(self, tmp_path: Path) -> None:
+        """使用合成正弦波音频测试 load_audio 正确加载。"""
+        import tempfile
+        from src.audio.loader import AudioData, save_audio, load_audio
+
+        sample_rate = 22050
+        duration = 1.0
+        frequency = 440.0
+        t = np.linspace(0, duration, int(sample_rate * duration), endpoint=False)
+        samples = np.sin(2 * np.pi * frequency * t).astype(np.float32)
+        audio_data = AudioData(samples=samples, sample_rate=sample_rate, duration=duration)
+
+        test_file = tmp_path / "sine.wav"
+        save_audio(test_file, audio_data)
+
+        loaded = load_audio(test_file, sr=sample_rate)
+        assert np.allclose(loaded.samples, samples, atol=1e-3)
+        assert loaded.sample_rate == sample_rate
 
 
 class TestSaveAudio:
@@ -157,3 +183,55 @@ class TestSaveAudio:
         invalid_path = tmp_path / "nonexistent_dir" / "output.wav"
         with pytest.raises(AudioLoaderError, match="保存失败"):
             save_audio(invalid_path, audio_data)
+
+
+class TestDownloadAudioFromUrl:
+    """download_audio_from_url 函数测试（需要网络）。"""
+
+    @pytest.mark.network
+    def test_download_audio_from_url_raises_on_invalid_url(self, tmp_path: Path) -> None:
+        """无效链接应抛出 AudioLoaderError。"""
+        with pytest.raises(AudioLoaderError, match="下载失败"):
+            download_audio_from_url("https://invalid.url/video", tmp_path)
+
+    @pytest.mark.network
+    def test_download_audio_from_url_bilibili(self, tmp_path: Path) -> None:
+        """Bilibili 视频应能成功下载。"""
+        path = download_audio_from_url(
+            "https://www.bilibili.com/video/BV1Ye4y1f7kA",
+            tmp_path / "bilibili_audio.mp3",
+        )
+        assert path.exists()
+        assert path.stat().st_size > 0
+
+    @pytest.mark.network
+    def test_download_audio_from_url_youtube(self, tmp_path: Path) -> None:
+        """YouTube 视频应能成功下载。"""
+        path = download_audio_from_url(
+            "https://www.youtube.com/watch?v=mt56HEafeWU",
+            tmp_path / "youtube_audio.mp3",
+        )
+        assert path.exists()
+        assert path.stat().st_size > 0
+
+
+class TestLoadAudioFromUrl:
+    """load_audio_from_url 函数测试（需要网络）。"""
+
+    @pytest.mark.network
+    def test_load_audio_from_url_bilibili(self) -> None:
+        """Bilibili 链接应返回 AudioData。"""
+        audio = load_audio_from_url("https://www.bilibili.com/video/BV1Ye4y1f7kA")
+        assert isinstance(audio, AudioData)
+        assert audio.duration > 0
+        assert audio.sample_rate > 0
+        assert len(audio.samples) > 0
+
+    @pytest.mark.network
+    def test_load_audio_from_url_youtube(self) -> None:
+        """YouTube 链接应返回 AudioData。"""
+        audio = load_audio_from_url("https://www.youtube.com/watch?v=mt56HEafeWU")
+        assert isinstance(audio, AudioData)
+        assert audio.duration > 0
+        assert audio.sample_rate > 0
+        assert len(audio.samples) > 0
