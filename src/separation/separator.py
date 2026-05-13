@@ -216,25 +216,3 @@ class Separator:
         audio = load_audio(path)
         return self.separate(audio)
     
-
-
-
-
-
-
-
-if __name__ == "__main__":
-   
-    #################test code#################
-    s = Separator()
-
-    a = s.separate_file("F:/music/M80000392RMc3Lpx6B.mp3")
-    output_dir = "F:/music/separated1_tracks"
-    os.makedirs(output_dir, exist_ok=True)
-
-    for track_id in TrackId:
-        track_data = a.get_track(track_id)
-        filename = f"{track_id.value}.wav"
-        filepath = os.path.join(output_dir, filename)
-        sf.write(filepath, track_data, a.sample_rate)
-        print(f"已保存: {filepath}")
