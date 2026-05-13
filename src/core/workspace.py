@@ -4,13 +4,9 @@ from __future__ import annotations
 
 import json
 import uuid
-import numpy as np
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
-
-###########从separator导入分离结果和轨道枚举######################
-from src.separation.separator import SeparationResult, TrackId 
 
 if TYPE_CHECKING:
     from src.audio.loader import AudioData
@@ -41,9 +37,7 @@ class Workspace:
     # 分析结果缓存
     _beat_info: dict | None = field(default=None, repr=False)
     _chord_events: list | None = field(default=None, repr=False)
-    
-    # 将原来的 dict 改写为具体的 SeparationResult 类型
-    _separation_result: SeparationResult | None = field(default=None, repr=False)
+    _separation_result: dict | None = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
         """初始化默认的 6 轨状态。"""
@@ -102,27 +96,6 @@ class Workspace:
         with path.open("r", encoding="utf-8") as f:
             data = json.load(f)
         return cls.from_dict(data)
-    
-    ##############轨道选择新添加##############
-    selected_analysis_track_id: str | None = None
-
-    def set_analysis_track(self, track_id: str) -> None:
-        """【新增接口1】供 UI 下拉菜单调用：设置要分析的音轨"""
-        if track_id in self.track_states:
-            self.selected_analysis_track_id = track_id
-        else:
-            raise ValueError(f"无效的音轨 ID: {track_id}")
-
-    def get_analysis_target_data(self) -> np.ndarray | None:
-        """【新增接口2】供分析引擎调用：获取当前选中音轨的 numpy 数组"""
-        if not self.selected_analysis_track_id or not self._separation_result:
-            return None
-        # 假设 _separation_result 是我们之前写的 SeparationResult 对象
-        try:
-            track_enum = TrackId(self.selected_analysis_track_id)
-            return self._separation_result.get_track(track_enum)
-        except ValueError:
-            return None
 
 
 class WorkspaceManager:
