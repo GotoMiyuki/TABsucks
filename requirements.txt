@@ -6,6 +6,18 @@ soundfile>=0.12.0
 numpy>=1.24.0
 
 # 深度学习（BS-RoFormer）
-# torch>=2.0.0
-# torchaudio>=2.0.0
-# demucs>=4.0.0
+torch>=2.0.0
+torchaudio>=2.0.0
+demucs>=4.0.0
+
+#基础节奏、和弦识别
+pretty_midi>=0.2.9
+h5py>=2.9.0
+matplotlib>=2.2.4
+mir_eval>=0.5
+pydub>=0.23.1
+joblib>=0.13.2
+figures>=0.3.16
+jams>=0.3.4
+pumpp>=0.5.0
+scikit_learn>=0.23.2
