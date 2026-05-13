@@ -1,0 +1,36 @@
+# .github/workflows/ai-pr-reviewer.yml
+name: AI Code Review
+
+# 触发条件：当 PR 被打开、或收到新的 commit 同步时触发
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+  # 可选：允许在 PR 评论中与 AI 机器人对话
+  pull_request_review_comment:
+    types: [created]
+
+# 权限：给予 Action 读取代码和在 PR 中评论的权限
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    steps:
+      # 1. 检出代码
+      - uses: actions/checkout@v4
+      
+      # 2. 使用 CodeRabbit 的正式 Action
+      - uses: coderabbitai/ai-pr-reviewer@latest
+        env:
+          # 引用在仓库 Secrets 中配置的密钥
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        with:
+          # 可选：开启调试模式，查看更多运行细节
+          debug: false
+          # 可选：是否审查非常微小的变更
+          review_simple_changes: false
+          # 可选：当 AI 认为代码看起来不错(LGTM)时，是否发表评论
+          review_comment_lgtm: true
