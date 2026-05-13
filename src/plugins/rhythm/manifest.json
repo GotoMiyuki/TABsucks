@@ -1,0 +1,21 @@
+{
+    "name": "rhythm_foundation",
+    "display_name": "Foundation Rhythm Analyzer",
+    "version": "1.2.0",
+    "author": "TABsucks Team",
+    "description": "Pre‑separation DSP rhythm analysis: global BPM, time signature, complexity estimation.",
+    "plugin_class": "FoundationRhythmPlugin",
+    "entrypoint": "src.plugins.rhythm.foundation_rhythm",
+    "requirements": {
+        "python": ">=3.8",
+        "packages": ["numpy", "madmom"],
+        "hardware": {
+            "cpu": "required",
+            "gpu": "optional",
+            "ram_mb_min": 128
+        }
+    },
+    "phase": "pre‑separation",
+    "outputs": ["global_bpm", "time_signature", "complexity_score", "onset_envelope"],
+    "triggers": { "needs_deep_analysis": true }
+}
