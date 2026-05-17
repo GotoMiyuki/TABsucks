@@ -19,7 +19,8 @@ os.environ["HF_HUB_OFFLINE"] = "0"
 # os.environ["CUDA_VISIBLE_DEVICES"] = "1"
 # ================================================
 
-"""音轨分离模块，使用 6 轨版 BS-RoFormer 模型。"""
+"""音轨分离模块，使用 6 轨版 BS-RoFormer 模型。""" 
+#该模型支持分离音频文件时常必须大于等于4s
 
 
 
@@ -215,4 +216,3 @@ class Separator:
         from src.audio.loader import load_audio
         audio = load_audio(path)
         return self.separate(audio)
-    
