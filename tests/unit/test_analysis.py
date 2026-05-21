@@ -11,7 +11,7 @@ from src.analysis.chord import (
     ChordAnalyzer,
     ChordEvent,
 )
-from src.analysis.beat import BeatTracker, BeatEvent, BeatInfo
+from src.analysis.beat import BeatTracker, BeatEvent, BeatInfo, BeatTrackerError
 from src.analysis.rhythm import (
     RhythmAnalyzer,
     RhythmPattern,
@@ -93,19 +93,16 @@ class TestBeatEvent:
 
     def test_measure_4_4(self) -> None:
         """4/4 拍下的小节计算正确。"""
-        # 第 5 拍 = 第 2 小节第 1 拍
         beat = BeatEvent(time=1.0, beat_number=5)
         assert beat.measure == 2
         assert beat.beat_in_measure == 1
 
     def test_measure_waltz(self) -> None:
-        """3/4 拍下的小节计算（逻辑验证）。"""
-        # 华尔兹每小节 3 拍
-        # BeatEvent 不存储拍号，此处验证 beat_number 逻辑
-        beat1 = BeatEvent(time=0.0, beat_number=1)
-        beat2 = BeatEvent(time=0.5, beat_number=2)
-        beat3 = BeatEvent(time=1.0, beat_number=3)
-        beat4 = BeatEvent(time=1.5, beat_number=4)  # 下一小节第 1 拍
+        """3/4 拍下的小节计算正确。"""
+        beat1 = BeatEvent(time=0.0, beat_number=1, beats_per_measure=3)
+        beat2 = BeatEvent(time=0.5, beat_number=2, beats_per_measure=3)
+        beat3 = BeatEvent(time=1.0, beat_number=3, beats_per_measure=3)
+        beat4 = BeatEvent(time=1.5, beat_number=4, beats_per_measure=3)
 
         assert beat1.beat_in_measure == 1
         assert beat2.beat_in_measure == 2
@@ -126,15 +123,33 @@ class TestBeatTracker:
         assert tracker._time_signature == (4, 4)
 
     def test_estimate_time_signature(self) -> None:
-        """拍号估算默认返回 4/4。"""
+        """拍号归一化返回配置值。"""
+        tracker = BeatTracker(time_signature="3/4")
+        sig = tracker.estimate_time_signature()
+        assert sig == (3, 4)
+
+    def test_track_builds_beat_info_from_times(self) -> None:
+        """track 根据 beat_times 构建 BeatInfo。"""
         tracker = BeatTracker()
+        beat_info = tracker.track([0.0, 0.5, 1.0, 1.5], bpm=120.0, time_signature="3/4")
+
+        assert isinstance(beat_info, BeatInfo)
+        assert beat_info.bpm == 120.0
+        assert beat_info.time_signature == (3, 4)
+        assert len(beat_info.beat_events) == 4
+        assert beat_info.beat_events[0].beat_in_measure == 1
+        assert beat_info.beat_events[3].measure == 2
+
+    def test_track_rejects_audio_detection(self) -> None:
+        """传入音频对象时应提示检测职责已迁移。"""
+        tracker = BeatTracker()
+
         class MockAudio:
             samples = np.zeros(44100)
             sample_rate = 44100
-            duration = 1.0
 
-        sig = tracker.estimate_time_signature(MockAudio())
-        assert sig == (4, 4)
+        with pytest.raises(BeatTrackerError):
+            tracker.track(MockAudio())
 
 
 # ---- RhythmAnalyzer 测试 ----
