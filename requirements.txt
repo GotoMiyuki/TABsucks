@@ -5,7 +5,14 @@ librosa>=0.10.0
 soundfile>=0.12.0
 numpy>=1.24.0
 
-# 深度学习（BS-RoFormer）
-# torch>=2.0.0
-# torchaudio>=2.0.0
-# demucs>=4.0.0
+# 深度学习（BS-RoFormer 音频分离）
+torch>=2.0.0
+torchaudio>=2.0.0
+audio-separator>=0.12.0
+onnxruntime-gpu>=1.16.0
+
+# 系统依赖（需单独安装）
+# ffmpeg - 请通过系统包管理器安装，例如：
+#   Ubuntu/Debian: sudo apt install ffmpeg
+#   macOS: brew install ffmpeg
+#   Windows: 下载预编译包或使用 choco install ffmpeg

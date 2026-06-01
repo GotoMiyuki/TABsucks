@@ -1,9 +1,16 @@
 import os
+import sys
 import numpy as np
 import pytest
 from unittest.mock import patch, MagicMock
 
-# 这里的 import 你的路径是对的
+# 模拟 audio-separator 模块，避免在测试环境中安装该依赖
+mock_audio_separator = MagicMock()
+mock_engine_cls = MagicMock()
+mock_audio_separator.separator.Separator = mock_engine_cls
+sys_modules_patch = patch.dict("sys.modules", {"audio_separator": mock_audio_separator, "audio_separator.separator": mock_audio_separator.separator})
+sys_modules_patch.start()
+
 from src.separation.separator import Separator, TrackId, SeparatorError
 
 # ================= 辅助/假数据类 =================
@@ -136,9 +143,147 @@ def test_separate_missing_tracks(mock_sf, MockAudioSeparator, mock_separator, mo
         assert result.drums.shape == (n_samples, 2)
 
 
-# ================= 真实推理测试 (Integration Test) =================
+# ================= 文件名匹配测试 =================
 
-@pytest.mark.slow  # 打上 slow 标记，方便以后在命令行中跳过它
+@patch("src.separation.separator.AudioSeparator")
+@patch("src.separation.separator.sf")
+def test_separate_filename_parsing_all_tracks(mock_sf, MockAudioSeparator, mock_separator, mock_audio_data):
+    """测试所有6个音轨的文件名都能被正确解析"""
+    mock_engine = MagicMock()
+    mock_engine.output_dir = "/tmp/fake_dir"
+    mock_engine.separate.return_value = [
+        "vocals.wav", "drums.wav", "bass.wav",
+        "piano.wav", "guitar.wav", "other.wav"
+    ]
+    MockAudioSeparator.return_value = mock_engine
+
+    n_samples = mock_audio_data.samples.shape[1]
+
+    with patch("os.path.exists", return_value=True), patch("os.remove"):
+        # 每个文件返回不同长度的数据以便验证对应关系
+        fake_data_map = {
+            "vocals": np.random.rand(n_samples, 2).astype(np.float32),
+            "drums": np.random.rand(n_samples, 2).astype(np.float32),
+            "bass": np.random.rand(n_samples, 2).astype(np.float32),
+            "piano": np.random.rand(n_samples, 2).astype(np.float32),
+            "guitar": np.random.rand(n_samples, 2).astype(np.float32),
+            "other": np.random.rand(n_samples, 2).astype(np.float32),
+        }
+
+        def fake_read(path):
+            fname = os.path.basename(path)
+            return fake_data_map.get(fname.replace(".wav", "").lower(), fake_data_map["other"]), 44100
+
+        mock_sf.read.side_effect = fake_read
+
+        result = mock_separator.separate(mock_audio_data)
+
+        # 验证所有6个轨道都正确填充
+        assert result.vocals.shape == (n_samples, 2)
+        assert result.drums.shape == (n_samples, 2)
+        assert result.bass.shape == (n_samples, 2)
+        assert result.piano.shape == (n_samples, 2)
+        assert result.guitar.shape == (n_samples, 2)
+        assert result.other.shape == (n_samples, 2)
+
+
+@patch("src.separation.separator.AudioSeparator")
+@patch("src.separation.separator.sf")
+def test_separate_filename_case_insensitive(mock_sf, MockAudioSeparator, mock_separator, mock_audio_data):
+    """测试文件名匹配是大小写不敏感的"""
+    mock_engine = MagicMock()
+    mock_engine.output_dir = "/tmp/fake_dir"
+    mock_engine.separate.return_value = ["VOCALS.wav", "Drums.wav", "BASS.wav"]
+    MockAudioSeparator.return_value = mock_engine
+
+    n_samples = mock_audio_data.samples.shape[1]
+
+    with patch("os.path.exists", return_value=True), patch("os.remove"):
+        fake_data = np.random.rand(n_samples, 2).astype(np.float32)
+        mock_sf.read.return_value = (fake_data, 44100)
+
+        result = mock_separator.separate(mock_audio_data)
+
+        # 大写的 VOCALS 仍应被正确匹配到 vocals 轨道
+        assert not np.all(result.vocals == 0), "大写 VOCALS 未能匹配到 vocals 轨道"
+        assert result.drums.shape == (n_samples, 2)
+
+
+# ================= 异常与边界测试 =================
+
+@patch("src.separation.separator.AudioSeparator")
+@patch("src.separation.separator.sf")
+def test_separate_engine_init_only_once(mock_sf, MockAudioSeparator, mock_separator, mock_audio_data):
+    """测试引擎延迟加载，且只初始化一次"""
+    mock_engine = MagicMock()
+    mock_engine.output_dir = "/tmp/fake_dir"
+    mock_engine.separate.return_value = []
+    MockAudioSeparator.return_value = mock_engine
+
+    with patch("os.path.exists", return_value=True), patch("os.remove"):
+        n_samples = mock_audio_data.samples.shape[1]
+        mock_sf.read.return_value = (np.random.rand(n_samples, 2), 44100)
+
+        # 连续调用两次 separate，引擎只应初始化一次
+        mock_engine.reset_mock()
+        MockAudioSeparator.reset_mock()
+
+        separator = Separator()
+        separator._init_engine()
+        separator._init_engine()
+
+        # 断言 AudioSeparator 只被实例化一次
+        assert MockAudioSeparator.call_count == 1, "引擎应该只初始化一次"
+
+
+def test_track_id_enum_values():
+    """测试 TrackId 枚举包含所有6种音轨类型"""
+    from src.separation.separator import TrackId
+
+    expected = {"vocals", "drums", "bass", "piano", "guitar", "other"}
+    actual = {t.value for t in TrackId}
+    assert expected == actual, f"TrackId 枚举值不完整，期望 {expected}，实际 {actual}"
+
+
+def test_separation_result_get_track():
+    """测试 SeparationResult.get_track 方法能通过枚举正确获取音轨"""
+    from src.separation.separator import SeparationResult, TrackId
+
+    n_samples = 44100
+    fake_data = np.random.rand(n_samples, 2).astype(np.float32)
+
+    result = SeparationResult(
+        vocals=fake_data,
+        drums=fake_data,
+        bass=fake_data,
+        piano=fake_data,
+        guitar=fake_data,
+        other=fake_data,
+        sample_rate=44100,
+    )
+
+    # 验证通过枚举获取每条轨道
+    for track_id in TrackId:
+        track_data = result.get_track(track_id)
+        assert isinstance(track_data, np.ndarray)
+        assert track_data.shape == (n_samples, 2)
+
+
+def test_separator_error_is_exception():
+    """测试 SeparatorError 是有效的异常类型"""
+    from src.separation.separator import SeparatorError
+
+    error = SeparatorError("test error message")
+    assert isinstance(error, Exception)
+    assert str(error) == "test error message"
+
+    with pytest.raises(SeparatorError):
+        raise SeparatorError("intentional test")
+
+
+# ================= 真实推理集成测试 =================
+
+@pytest.mark.slow
 def test_separate_real_inference_e2e():
     """
     真正的端到端集成测试 (End-to-End Integration Test)。
@@ -153,39 +298,39 @@ def test_separate_real_inference_e2e():
     sr = 44100
     duration = 4.0
     t = np.linspace(0, duration, int(sr * duration), endpoint=False)
-    audio_wave = 0.5 * np.sin(2 * np.pi * 440 * t) 
-    
+    audio_wave = 0.5 * np.sin(2 * np.pi * 440 * t)
+
     # 转为双声道 shape: (2, 44100)
     samples = np.vstack((audio_wave, audio_wave)).astype(np.float32)
     real_audio_data = DummyAudioData(samples=samples, sample_rate=sr)
-    
+
     # 2. 初始化真实的 Separator (使用默认模型 BS-Roformer)
-    separator = Separator() 
-    
+    separator = Separator()
+
     # 3. 执行真正的分离 (这里会极其耗时)
     print("\n[开始真实模型推理，请耐心等待...]")
     try:
         result = separator.separate(real_audio_data)
     except Exception as e:
         pytest.fail(f"真实推理过程中发生崩溃: {e}")
-        
+
     # 4. 严苛的断言检查
     n_samples = samples.shape[1]
-    
+
     # 检查基本属性
     assert result.sample_rate == sr
-    
+
     # 检查 6 个轨道是否都正确生成，且维度被完美对齐
     tracks = ["vocals", "drums", "bass", "piano", "guitar", "other"]
     for track in tracks:
         track_data = getattr(result, track)
-        
+
         # 断言 1: 数据类型必须是 NumPy 数组
         assert isinstance(track_data, np.ndarray), f"{track} 轨道不是 numpy 数组！"
-        
+
         # 断言 2: 无论模型吐出来什么鬼样子，最后输出的 shape 必须和输入一致
         assert track_data.shape == (n_samples, 2), f"{track} 轨道维度错误，期望 {(n_samples, 2)}，实际 {track_data.shape}"
-        
+
         # 断言 3: 检查 fallback 逻辑。如果你给了一段声音，经过模型处理，
         # 通常不太可能输出绝对纯净的 0（即便该轨道没有声音，也会有微弱的底噪浮点数）。
         # 如果某个轨道全为 0，大概率是你的文件名匹配逻辑失效，触发了 fallback。
