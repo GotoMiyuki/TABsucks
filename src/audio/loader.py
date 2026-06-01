@@ -109,7 +109,7 @@ class AudioData:
 
     Attributes:
         samples: 单声道音频样本，形状为 (n_samples,)，数据类型为 float32。
-        sample_rate: 采样率（Hz），如 44100、22050。
+        sample_rate: 采样率(Hz)，如 44100、22050。
         duration: 时长（秒），由 samples 数量除以采样率计算得出。
     """
 
@@ -120,7 +120,6 @@ class AudioData:
     @property
     def channels(self) -> int:
         """音频通道数，等于 samples 的维度数。
-
         1 维 → 单声道，2 维 → 多声道（如立体声）。
         """
         return self.samples.ndim
