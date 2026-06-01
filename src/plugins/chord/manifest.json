@@ -1,0 +1,33 @@
+{
+  "plugins": [
+    {
+      "name": "chord_ismir2019",
+      "class": "ISMIR2019ChordPlugin",
+      "entrypoint": "src.plugins.chord.ismir2019_plugin",
+      "display_name": "ISMIR 2019 Chord Recognizer",
+      "version": "1.0.0",
+      "input_stems": ["piano", "guitar"],
+      "output": "component_chord_labels",
+      "requirements": {
+        "gpu_memory_mb": 1024,
+        "ram_mb_min": 512,
+        "python_packages": ["torch", "librosa"]
+      },
+      "phase": "post-separation"
+    },
+    {
+      "name": "chord_bass_root",
+      "class": "BassRootPlugin",
+      "entrypoint": "src.plugins.chord.bass_root_plugin",
+      "display_name": "Bass Root Detector",
+      "version": "1.0.0",
+      "input_stems": ["bass"],
+      "output": "root_note",
+      "requirements": {
+        "gpu_memory_mb": 0,
+        "ram_mb_min": 128
+      },
+      "phase": "post-separation"
+    }
+  ]
+}
