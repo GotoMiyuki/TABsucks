@@ -6,8 +6,8 @@ import tempfile
 import soundfile as sf
 from typing import Dict, Any
 
-from src.plugins.base import BasePlugin
-from src.core.resource_controller import ResourceController
+from src.plugins import BasePlugin
+from src.kernel.core.resource_controller import ResourceController
 
 # 指向外部仓库根目录
 EXTERNAL_DIR = os.path.join(os.path.dirname(__file__), "external", "ismir2019")

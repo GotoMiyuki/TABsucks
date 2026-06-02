@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 ###########从separator导入分离结果和轨道枚举######################
-from src.separation.separator import SeparationResult, TrackId 
+from src.plugins.separation.separator import SeparationResult, TrackId
 
 if TYPE_CHECKING:
     from src.audio.loader import AudioData
