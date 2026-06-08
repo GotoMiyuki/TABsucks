@@ -5,6 +5,8 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from pathlib import Path
 
+from src.kernel.core.resource_controller import ResourceController
+
 
 class Plugin(ABC):
     """插件基类，所有分析插件需继承此类。"""
@@ -33,6 +35,10 @@ class Plugin(ABC):
             分析结果字典。
         """
         ...
+
+
+# 部分插件以 BasePlugin 引用此类，保留别名
+BasePlugin = Plugin
 
 
 class PluginManager:
