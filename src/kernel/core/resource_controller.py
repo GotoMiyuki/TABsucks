@@ -1,9 +1,7 @@
 """资源控制器，管理音频 buffer、元数据和模型的生命周期。"""
 
 from __future__ import annotations
-
 from typing import Any, Callable
-
 import numpy as np
 
 
