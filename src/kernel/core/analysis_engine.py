@@ -162,6 +162,7 @@ class AnalysisEngine:
     def _run_chord(self, stem: str) -> list[ChordEvent]:
         """对指定 stem 执行和弦识别并归一化。"""
         chord_plugin_names = [
+            "chord_chordnet_2e1d",
             "chord_btc_sl",
             "chord_ismir2019",
             "chord_analyzer_stem_aware",

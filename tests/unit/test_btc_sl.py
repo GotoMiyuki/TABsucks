@@ -2,10 +2,23 @@
 
 from __future__ import annotations
 
+import os
+import sys
+
 import numpy as np
 import pytest
+import torch
+
+# 将 ChordMini 的 src 注入 TABsucks 的 src 包路径
+_CHORDMINI_SRC = os.path.normpath(
+    os.path.join(os.path.dirname(__file__), "..", "..", "src", "plugins", "chord", "external", "chordmini", "src")
+)
+import src as _tabsucks_src
+if _CHORDMINI_SRC not in _tabsucks_src.__path__:
+    _tabsucks_src.__path__.insert(0, _CHORDMINI_SRC)
 
 from src.plugins.chord.btc_sl import idx2voca_chord, _run_length_encode
+from src.kernel.core.resource_controller import ResourceController
 
 
 class TestIdx2VocaChord:
@@ -77,3 +90,61 @@ class TestRunLengthEncode:
         result = _run_length_encode(preds, hop_length=2048, sr=22050)
         for i in range(len(result) - 1):
             assert result[i]["end"] == result[i + 1]["start"]
+
+
+class TestBTCSLChordPluginExecute:
+    """BTCSLChordPlugin.execute 流程测试（使用 mock 模型）。"""
+
+    @pytest.fixture()
+    def plugin_with_mock_model(self, monkeypatch):
+        from src.plugins.chord.btc_sl import _setup_chordmini_imports
+        _setup_chordmini_imports()
+
+        from src.models.btc_model import BTC_model
+        from src.models.common.config import ModelConfig
+
+        config = ModelConfig()
+        mock_model = BTC_model(config=config)
+        mock_model.eval()
+
+        from src.plugins.chord.btc_sl import BTCSLChordPlugin
+        plugin = BTCSLChordPlugin()
+
+        def mock_init(self, rc, checkpoint_path=None):
+            device = rc.get_current_device() if hasattr(rc, "get_current_device") else "cpu"
+            model = mock_model.to(device)
+            return model, 0.0, 1.0
+
+        def mock_cqt(audio, sr):
+            num_frames = max(1, len(audio) // 2048)
+            return np.random.randn(num_frames, 144).astype(np.float32)
+
+        def mock_sliding_windows(model, feature_matrix, mean, std, seq_len=108,
+                                 batch_size=32, model_type="BTC", n_classes=170,
+                                 **kwargs):
+            n_frames = feature_matrix.shape[0]
+            return np.random.randint(0, n_classes, size=n_frames, dtype=np.int64)
+
+        monkeypatch.setattr(BTCSLChordPlugin, "_init_model", mock_init)
+        monkeypatch.setattr("src.plugins.chord.btc_sl._extract_cqt_features", mock_cqt)
+        monkeypatch.setattr("src.plugins.chord.btc_sl._predict_sliding_windows", mock_sliding_windows)
+        return plugin
+
+    def test_execute_returns_correct_format(self, plugin_with_mock_model) -> None:
+        rc = ResourceController()
+        audio = np.random.randn(22050 * 5).astype(np.float32) * 0.01
+        rc.set_buffer("piano", audio)
+        rc.set_metadata("sample_rate", 22050)
+
+        result = plugin_with_mock_model.execute(rc, stem_name="piano")
+
+        assert result["status"] == "success"
+        assert result["stem"] == "piano"
+        assert isinstance(result["data"], list)
+        for chord_event in result["data"]:
+            assert "start" in chord_event
+            assert "end" in chord_event
+            assert "chord" in chord_event
+
+    def test_version_is_v2(self, plugin_with_mock_model) -> None:
+        assert plugin_with_mock_model.version == "2.0.0"

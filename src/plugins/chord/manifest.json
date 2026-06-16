@@ -1,9 +1,39 @@
 {
   "plugins": [
     {
+      "name": "chord_chordnet_2e1d",
+      "class": "ChordNet2E1DPlugin",
+      "entrypoint": "src.plugins.chord.chordnet_2e1d",
+      "display_name": "ChordNet 2E1D Chord Recognizer (ChordMini)",
+      "version": "1.0.0",
+      "input_stems": ["piano", "guitar"],
+      "output": "component_chord_labels",
+      "requirements": {
+        "gpu_memory_mb": 1024,
+        "ram_mb_min": 512,
+        "python_packages": ["torch", "librosa", "numpy"]
+      },
+      "phase": "post-separation"
+    },
+    {
+      "name": "chord_btc_sl",
+      "class": "BTCSLChordPlugin",
+      "entrypoint": "src.plugins.chord.btc_sl",
+      "display_name": "BTC-SL Chord Recognizer (ChordMini)",
+      "version": "2.0.0",
+      "input_stems": ["piano", "guitar"],
+      "output": "component_chord_labels",
+      "requirements": {
+        "gpu_memory_mb": 2048,
+        "ram_mb_min": 1024,
+        "python_packages": ["torch", "librosa", "numpy"]
+      },
+      "phase": "post-separation"
+    },
+    {
       "name": "chord_ismir2019",
       "class": "ISMIR2019ChordPlugin",
-      "entrypoint": "src.plugins.chord.ismir2019_plugin",
+      "entrypoint": "src.plugins.chord.ismir2019",
       "display_name": "ISMIR 2019 Chord Recognizer",
       "version": "1.0.0",
       "input_stems": ["piano", "guitar"],
@@ -18,7 +48,7 @@
     {
       "name": "chord_bass_root",
       "class": "BassRootPlugin",
-      "entrypoint": "src.plugins.chord.bass_root_plugin",
+      "entrypoint": "src.plugins.chord.bass_root",
       "display_name": "Bass Root Detector",
       "version": "1.0.0",
       "input_stems": ["bass"],
