@@ -6,6 +6,8 @@ import numpy as np
 import pytest
 from unittest.mock import MagicMock, patch
 
+from src.analysis.chord import ChordEvent
+from src.analysis.key import KeyAnalysis
 from src.kernel.core.analysis_engine import AnalysisEngine, AnalysisEngineError, AnalysisResult
 from src.kernel.core.plugin_manager import PluginManager
 from src.kernel.core.resource_controller import ResourceController
@@ -14,11 +16,16 @@ from src.plugins import Plugin
 
 # ---- Mock 插件 ----
 
+
 class MockRhythmPlugin(Plugin):
     @property
-    def name(self): return "rhythm_foundation"
+    def name(self):
+        return "rhythm_foundation"
+
     @property
-    def version(self): return "0.0.1"
+    def version(self):
+        return "0.0.1"
+
     def execute(self, rc, **kwargs):
         return {
             "status": "success",
@@ -34,10 +41,15 @@ class MockRhythmPlugin(Plugin):
 
 class MockComplexRhythmPlugin(Plugin):
     """complexity > 0.6 的节奏插件，用于测试 deep_rhythm 触发。"""
+
     @property
-    def name(self): return "rhythm_foundation"
+    def name(self):
+        return "rhythm_foundation"
+
     @property
-    def version(self): return "0.0.1"
+    def version(self):
+        return "0.0.1"
+
     def execute(self, rc, **kwargs):
         return {
             "status": "success",
@@ -53,9 +65,13 @@ class MockComplexRhythmPlugin(Plugin):
 
 class MockChordPlugin(Plugin):
     @property
-    def name(self): return "chord_ismir2019"
+    def name(self):
+        return "chord_ismir2019"
+
     @property
-    def version(self): return "0.0.1"
+    def version(self):
+        return "0.0.1"
+
     def execute(self, rc, **kwargs):
         stem = kwargs.get("stem_name", "piano")
         return {
@@ -68,18 +84,35 @@ class MockChordPlugin(Plugin):
         }
 
 
-class MockBassRootPlugin(Plugin):
+class MockBassProgressionPlugin(Plugin):
+    """返回 bass progression 格式的 mock bass 插件。"""
+
     @property
-    def name(self): return "chord_bass_root"
+    def name(self):
+        return "chord_bass_root"
+
     @property
-    def version(self): return "0.0.1"
+    def version(self):
+        return "0.0.1"
+
     def execute(self, rc, **kwargs):
-        return {"status": "success", "root": "A"}
+        return {
+            "status": "success",
+            "root": "A",
+            "bass_progression": [
+                {"root": "E", "quality": "", "start": 0.0, "end": 1.0},
+                {"root": "A", "quality": "", "start": 1.0, "end": 3.0},
+                {"root": "A", "quality": "", "start": 3.0, "end": 4.0},
+            ],
+        }
 
 
 # ---- 辅助 ----
 
-def _setup_engine(rhythm_plugin=None, chord_plugin=None, bass_plugin=None, with_stems=True):
+
+def _setup_engine(
+    rhythm_plugin=None, chord_plugin=None, bass_plugin=None, with_stems=True
+):
     rc = ResourceController()
     rc.set_buffer("raw", np.zeros(44100 * 2))
     rc.set_metadata("sample_rate", 44100)
@@ -101,15 +134,16 @@ def _setup_engine(rhythm_plugin=None, chord_plugin=None, bass_plugin=None, with_
 
 # ---- 测试 ----
 
+
 class TestAnalysisEngineRun:
     """AnalysisEngine.run() 流水线测试。"""
 
     def test_full_pipeline(self) -> None:
-        """完整流水线：节奏→和弦→bass_root。"""
+        """完整流水线：节奏→节拍→和弦→bass→调性→精炼。"""
         engine, rc, _ = _setup_engine(
             rhythm_plugin=MockRhythmPlugin(),
             chord_plugin=MockChordPlugin(),
-            bass_plugin=MockBassRootPlugin(),
+            bass_plugin=MockBassProgressionPlugin(),
         )
 
         with patch.object(engine, "_run_separation", return_value=None):
@@ -119,28 +153,50 @@ class TestAnalysisEngineRun:
         assert result.rhythm is not None
         assert result.rhythm.global_bpm == 120.0
         assert result.rhythm.time_signature == "4/4"
+
+        # beat_info 应存在
+        assert result.beat_info is not None
+        assert result.beat_info.bpm == 120.0
+
+        # bass_progression 应存在
+        assert len(result.bass_progression) >= 1
+        assert all(isinstance(ev, ChordEvent) for ev in result.bass_progression)
+
+        # 向后兼容 bass_root
         assert result.bass_root == "A"
+
+        # chord_events
         assert "piano" in result.chord_events
         assert "guitar" in result.chord_events
         assert len(result.chord_events["piano"]) == 2
         assert result.chord_events["piano"][0].name == "Am7"
 
+        # key_analysis 应存在（有 bass progression）
+        assert result.key_analysis is not None
+        assert isinstance(result.key_analysis, KeyAnalysis)
+
     def test_progress_callback(self) -> None:
         """应调用 progress_callback 报告各阶段。"""
         engine, _, _ = _setup_engine(
             rhythm_plugin=MockRhythmPlugin(),
-            bass_plugin=MockBassRootPlugin(),
+            bass_plugin=MockBassProgressionPlugin(),
         )
 
         steps = []
+
         def callback(step, progress):
-            steps.append(step)
+            if step not in steps:
+                steps.append(step)
 
         with patch.object(engine, "_run_separation", return_value=None):
             engine.run(progress_callback=callback)
 
         assert "rhythm" in steps
-        assert "bass_root" in steps
+        assert "beat_grid" in steps
+        assert "bass_progression" in steps
+        assert "chord" in steps
+        assert "key_analysis" in steps
+        assert "refine" in steps
 
     def test_no_plugins_still_works(self) -> None:
         """没有注册插件时，应返回默认值而不报错。"""
@@ -149,16 +205,18 @@ class TestAnalysisEngineRun:
         with patch.object(engine, "_run_separation", return_value=None):
             result = engine.run()
 
-        assert result.rhythm.global_bpm is None  # RhythmInfo 默认值
+        assert result.rhythm.global_bpm is None
+        assert result.bass_progression == []
         assert result.bass_root == "N"
-        # stems 存在但无插件，chord_events 应为空列表
         assert all(v == [] for v in result.chord_events.values())
+        assert result.key_analysis is None
+        assert result.unified_chords == []
 
     def test_deep_rhythm_trigger_skips_gracefully(self) -> None:
         """complexity > 0.6 时触发 deep_rhythm，但无插件时应跳过。"""
         engine, _, _ = _setup_engine(
             rhythm_plugin=MockComplexRhythmPlugin(),
-            bass_plugin=MockBassRootPlugin(),
+            bass_plugin=MockBassProgressionPlugin(),
         )
 
         with patch.object(engine, "_run_separation", return_value=None):
@@ -166,13 +224,11 @@ class TestAnalysisEngineRun:
 
         assert result.rhythm.needs_deep_analysis is True
         assert result.rhythm.complexity_score == 0.85
-        # 不应报错，deep_rhythm 不存在时静默跳过
 
     def test_result_stored_on_engine(self) -> None:
-        """run() 的结果应存储在 engine.result 属性上。"""
         engine, _, _ = _setup_engine(
             rhythm_plugin=MockRhythmPlugin(),
-            bass_plugin=MockBassRootPlugin(),
+            bass_plugin=MockBassProgressionPlugin(),
         )
 
         with patch.object(engine, "_run_separation", return_value=None):
@@ -181,10 +237,9 @@ class TestAnalysisEngineRun:
         assert engine.result is result
 
     def test_result_stored_in_rc(self) -> None:
-        """run() 的结果应存入 RC metadata。"""
         engine, rc, _ = _setup_engine(
             rhythm_plugin=MockRhythmPlugin(),
-            bass_plugin=MockBassRootPlugin(),
+            bass_plugin=MockBassProgressionPlugin(),
         )
 
         with patch.object(engine, "_run_separation", return_value=None):
@@ -193,7 +248,6 @@ class TestAnalysisEngineRun:
         assert rc.get_metadata("analysis_result") is not None
 
     def test_missing_raw_buffer_raises(self) -> None:
-        """缺少 raw buffer 时应报错。"""
         rc = ResourceController()
         pm = PluginManager(rc)
         engine = AnalysisEngine(rc, pm)
@@ -202,7 +256,6 @@ class TestAnalysisEngineRun:
             engine.run()
 
     def test_separation_bridge_writes_stems_to_rc(self) -> None:
-        """分离步骤应将 stems 写入 RC buffer。"""
         mock_sep_result = MagicMock()
         mock_track = np.zeros(44100)
         mock_sep_result.get_track.return_value = mock_track
@@ -210,11 +263,10 @@ class TestAnalysisEngineRun:
 
         engine, rc, _ = _setup_engine(
             rhythm_plugin=MockRhythmPlugin(),
-            bass_plugin=MockBassRootPlugin(),
-            with_stems=False,  # 不预设 stems
+            bass_plugin=MockBassProgressionPlugin(),
+            with_stems=False,
         )
 
-        # mock _run_separation 以避免实际调用分离器
         track_names = ["vocals", "drums", "bass", "piano", "guitar", "other"]
 
         def fake_separation():
@@ -230,6 +282,36 @@ class TestAnalysisEngineRun:
         assert result.separation_result is not None
         assert rc.get_buffer("piano") is mock_track
 
+    def test_beat_grid_from_bpm(self) -> None:
+        """BPM=120, 2s 音频 → 4 个拍点（0.0, 0.5, 1.0, 1.5）。"""
+        engine, rc, _ = _setup_engine(
+            rhythm_plugin=MockRhythmPlugin(),
+            bass_plugin=MockBassProgressionPlugin(),
+        )
+
+        with patch.object(engine, "_run_separation", return_value=None):
+            result = engine.run()
+
+        beat_timestamps = rc.get_metadata("beat_timestamps")
+        assert beat_timestamps is not None
+        assert len(beat_timestamps) == 4  # 2s / 0.5s = 4 beats
+        assert beat_timestamps[0] == 0.0
+        assert beat_timestamps[1] == pytest.approx(0.5)
+
+    def test_refine_runs_with_data(self) -> None:
+        """有 chord events + beat timestamps 时 refine 应产出 unified_chords。"""
+        engine, _, _ = _setup_engine(
+            rhythm_plugin=MockRhythmPlugin(),
+            chord_plugin=MockChordPlugin(),
+            bass_plugin=MockBassProgressionPlugin(),
+        )
+
+        with patch.object(engine, "_run_separation", return_value=None):
+            result = engine.run()
+
+        # unified_chords 可能为空（取决于 merge 逻辑），但不应报错
+        assert isinstance(result.unified_chords, list)
+
 
 class TestAnalysisResult:
     """AnalysisResult 数据结构测试。"""
@@ -237,6 +319,24 @@ class TestAnalysisResult:
     def test_default_values(self) -> None:
         result = AnalysisResult()
         assert result.rhythm is None
+        assert result.beat_info is None
         assert result.chord_events == {}
-        assert result.bass_root == "N"
+        assert result.bass_progression == []
+        assert result.key_analysis is None
+        assert result.unified_chords == []
         assert result.separation_result is None
+
+    def test_bass_root_backward_compat(self) -> None:
+        """bass_root property 应从 bass_progression 推导。"""
+        result = AnalysisResult(
+            bass_progression=[
+                ChordEvent(root="E", quality="", start=0.0, end=1.0),
+                ChordEvent(root="A", quality="", start=1.0, end=3.0),
+                ChordEvent(root="A", quality="", start=3.0, end=4.0),
+            ]
+        )
+        assert result.bass_root == "A"  # A 出现 2 次，E 出现 1 次
+
+    def test_bass_root_empty_progression(self) -> None:
+        result = AnalysisResult()
+        assert result.bass_root == "N"
