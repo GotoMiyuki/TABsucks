@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TABsucks</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+</head>
+<body>
+    <div id="app">
+        <!-- ═══ 侧边栏 ═══ -->
+        <aside id="sidebar">
+            <div class="sidebar-logo">
+                <span class="logo-text">TABsucks</span>
+            </div>
+            <div id="workshop-list" class="workshop-list"></div>
+            <button id="btn-new-workshop" class="btn-pill">new workshop</button>
+        </aside>
+
+        <!-- ═══ 主区域 ═══ -->
+        <main id="main">
+            <!-- 顶部步骤指示器 -->
+            <nav id="step-bar">
+                <div class="step-indicator active" data-step="1">INPUT</div>
+                <div class="step-indicator" data-step="2">SELECT</div>
+                <div class="step-indicator" data-step="3">OUTPUT</div>
+            </nav>
+
+            <!-- 步骤内容区 -->
+            <div id="step-content">
+                <!-- ─── STEP 1: INPUT ─── -->
+                <section id="step-1" class="step-panel active">
+                    <div class="step-center">
+                        <div class="upload-row">
+                            <div class="sep-ring-wrap hidden" id="sep-ring-wrap">
+                                <svg class="sep-ring" viewBox="0 0 44 44">
+                                    <circle class="sep-ring-bg" cx="22" cy="22" r="18" />
+                                    <circle class="sep-ring-fg" id="sep-ring-fg" cx="22" cy="22" r="18" />
+                                </svg>
+                                <span class="sep-ring-label" id="sep-ring-label">0%</span>
+                            </div>
+                            <button id="btn-upload-file" class="btn-rect">
+                                <span>Upload audio file</span>
+                                <input type="file" id="file-input" accept="audio/*,video/*" hidden>
+                            </button>
+                            <button id="btn-upload-url" class="btn-rect">
+                                <span>Fetch from URL</span>
+                            </button>
+                        </div>
+                        <div id="input-url-wrap" class="input-url-wrap hidden">
+                            <input type="text" id="input-url" class="url-input" placeholder="paste audio or video URL">
+                            <button id="btn-fetch" class="btn-pill-sm">fetch</button>
+                        </div>
+                        <div id="audio-info" class="audio-info hidden">
+                            <span class="info-tag" id="info-filename">-</span>
+                            <span class="info-tag" id="info-duration">-</span>
+                            <span class="info-tag" id="info-samplerate">-</span>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- ─── STEP 2: SELECT (音轨选择 + 分析器配置) ─── -->
+                <section id="step-2" class="step-panel">
+                    <!-- 阶段 2a: 分离模型 + 选音轨 -->
+                    <div id="phase-separate">
+                        <button id="btn-model" class="btn-rect-sm top-right-abs">MODEL</button>
+                        <p class="step-hint">select your separator and tracks</p>
+                        <div id="stem-grid" class="stem-grid-2x3">
+                            <!-- 6 个音轨大方块，JS 动态生成 -->
+                        </div>
+                    </div>
+                    <!-- 阶段 2b: 分析器配置 -->
+                    <div id="phase-analyze" class="hidden">
+                        <p class="step-hint">select your analyzers</p>
+                        <div id="analysis-config-list" class="analysis-config-list"></div>
+                        <button id="btn-run-all" class="btn-pill" style="margin-top:20px;max-width:560px">run all</button>
+                    </div>
+                </section>
+
+                <!-- ─── STEP 3: OUTPUT (时间轴) ─── -->
+                <section id="step-3" class="step-panel">
+                    <div class="timeline-container">
+                        <div id="track-timeline-list" class="track-timeline-list">
+                            <p class="empty-msg">complete analysis first</p>
+                        </div>
+                    </div>
+                </section>
+            </div>
+
+            <!-- ═══ 底部操作栏 ═══ -->
+            <footer id="bottom-bar">
+                <button id="btn-prev" class="btn-pill hidden">previous</button>
+                <div id="playback-controls" class="playback-controls hidden">
+                    <input type="range" id="seek-bar" min="0" max="100" value="0" class="seek-bar">
+                    <span id="time-display" class="time-display">0:00/0:00</span>
+                    <button id="btn-play" class="btn-play" aria-label="播放">
+                        <svg width="18" height="18" viewBox="0 0 16 16" fill="currentColor"><path d="M4 2.5v11l9-5.5z"/></svg>
+                    </button>
+                    <span id="speed-label" class="speed-label">x1</span>
+                </div>
+                <button id="btn-next" class="btn-pill">next</button>
+            </footer>
+        </main>
+    </div>
+
+    <script type="module" src="/static/js/app.js"></script>
+</body>
+</html>

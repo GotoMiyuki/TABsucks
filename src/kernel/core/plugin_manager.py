@@ -45,6 +45,7 @@ class PluginManager:
 
     def execute(self, name: str, **kwargs) -> dict:
         """执行指定插件，自动注入 ResourceController。
+        注意不要与AnalysisEngine耦合。
 
         Args:
             name: 插件名称。

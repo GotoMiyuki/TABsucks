@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from src.analysis.beat import BeatInfo, BeatTracker, normalize_time_signature
 from src.analysis.chord import ChordAnalyzer, ChordEvent
@@ -47,21 +47,20 @@ class AnalysisEngineError(Exception):
 
 
 class AnalysisEngine:
-    """分析编排引擎，串联节奏→节拍→分离→和弦→调性→精炼 流水线。
+    """分析编排引擎，支持两种模式：
 
-    使用方式::
+    - **自动模式** ``run()`` — 一次跑完全流水线（基础节奏→BeatGrid→分离→…→Refiner）
+    - **单步模式** ``run_single()`` — 对单条音轨执行单个分析插件，供 Tab3 逐轨调用
 
-        rc = ResourceController()
-        rc.set_buffer("raw", audio_array)
-        rc.set_metadata("sample_rate", 22050)
-
-        pm = PluginManager(rc)
-        pm.register(FoundationRhythmPlugin())
-        pm.register(ISMIR2019ChordPlugin())
-        ...
+    自动模式使用方式::
 
         engine = AnalysisEngine(rc, pm)
         result = engine.run()
+
+    单步模式使用方式::
+
+        engine = AnalysisEngine(rc, pm)
+        chord_events = engine.run_single("piano", "chord_chordnet_2e1d")
     """
 
     # 和弦识别默认在这些 stem 上执行
@@ -145,6 +144,42 @@ class AnalysisEngine:
         self._rc.set_metadata("analysis_result", result)
         self._result = result
         return result
+
+    def run_single(
+        self,
+        track_id: str,
+        plugin_name: str,
+        progress_callback=None,
+    ) -> Any:
+        """单步模式：对指定音轨执行单个分析插件。
+
+        供 Tab3 逐轨独立调用。根据插件名称自动判断类型并归一化结果，
+        同时将结果累积写入 ``self._result``。
+
+        Args:
+            track_id: 目标音轨名称（如 ``"piano"``, ``"drums"``）。
+            plugin_name: 插件名称（如 ``"chord_chordnet_2e1d"``）。
+            progress_callback: 可选回调 ``(step: str, progress: float)``。
+
+        Returns:
+            归一化后的分析结果（和弦类返回 ``list[ChordEvent]`` 等）。
+
+        Raises:
+            PluginManagerError: 插件不存在。
+        """
+        self._report(progress_callback, f"{plugin_name}:{track_id}", 0.0)
+
+        raw_result = self._pm.execute(plugin_name, stem_name=track_id)
+
+        normalized = self._normalize_result(plugin_name, raw_result)
+
+        # 累积到 AnalysisResult
+        if self._result is None:
+            self._result = AnalysisResult()
+        self._accumulate(plugin_name, track_id, normalized)
+
+        self._report(progress_callback, f"{plugin_name}:{track_id}", 1.0)
+        return normalized
 
     # ------------------------------------------------------------------
     # 流水线各阶段
@@ -314,3 +349,31 @@ class AnalysisEngine:
     def _report(callback, step: str, progress: float) -> None:
         if callback is not None:
             callback(step, progress)
+
+    def _normalize_result(self, plugin_name: str, raw_result: Any) -> Any:
+        """根据插件类型归一化原始结果（复用 run() 中的解析逻辑）。"""
+        if plugin_name.startswith("chord_") and plugin_name != "chord_bass_root":
+            chord_dicts = (
+                raw_result.get("data", raw_result)
+                if isinstance(raw_result, dict)
+                else raw_result
+            )
+            return self._chord_analyzer.analyze(chord_dicts)
+
+        if plugin_name == "chord_bass_root":
+            progression_dicts = raw_result.get("bass_progression", [])
+            if progression_dicts:
+                return [ChordEvent(**d) for d in progression_dicts]
+            return []
+
+        # 默认：原样返回
+        return raw_result
+
+    def _accumulate(self, plugin_name: str, track_id: str, normalized: Any) -> None:
+        """将 run_single 的结果累积到 self._result。"""
+        assert self._result is not None
+
+        if plugin_name.startswith("chord_") and plugin_name != "chord_bass_root":
+            self._result.chord_events[track_id] = normalized
+        elif plugin_name == "chord_bass_root":
+            self._result.bass_progression = normalized

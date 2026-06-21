@@ -9,7 +9,7 @@ from unittest.mock import MagicMock, patch
 from src.analysis.chord import ChordEvent
 from src.analysis.key import KeyAnalysis
 from src.kernel.core.analysis_engine import AnalysisEngine, AnalysisEngineError, AnalysisResult
-from src.kernel.core.plugin_manager import PluginManager
+from src.kernel.core.plugin_manager import PluginManager, PluginManagerError
 from src.kernel.core.resource_controller import ResourceController
 from src.plugins import Plugin
 
@@ -340,3 +340,73 @@ class TestAnalysisResult:
     def test_bass_root_empty_progression(self) -> None:
         result = AnalysisResult()
         assert result.bass_root == "N"
+
+
+class TestAnalysisEngineRunSingle:
+    """AnalysisEngine.run_single() 逐轨独立调用测试。"""
+
+    def test_run_single_chord(self) -> None:
+        """对 piano 执行和弦插件，应返回 list[ChordEvent] 并累积到 result。"""
+        engine, _, _ = _setup_engine(chord_plugin=MockChordPlugin())
+
+        events = engine.run_single("piano", "chord_ismir2019")
+
+        assert isinstance(events, list)
+        assert len(events) == 2
+        assert all(isinstance(e, ChordEvent) for e in events)
+        assert events[0].name == "Am7"
+
+        # 应累积到 engine.result
+        assert engine.result is not None
+        assert "piano" in engine.result.chord_events
+        assert engine.result.chord_events["piano"] == events
+
+    def test_run_single_bass(self) -> None:
+        """执行 bass_root 插件，应返回 list[ChordEvent] 并累积到 bass_progression。"""
+        engine, _, _ = _setup_engine(bass_plugin=MockBassProgressionPlugin())
+
+        events = engine.run_single("bass", "chord_bass_root")
+
+        assert isinstance(events, list)
+        assert len(events) == 3
+        assert all(isinstance(e, ChordEvent) for e in events)
+        assert events[0].root == "E"
+        assert events[1].root == "A"
+
+        # 应累积到 engine.result.bass_progression
+        assert engine.result is not None
+        assert engine.result.bass_progression == events
+
+    def test_run_single_unknown_plugin_raises(self) -> None:
+        """不存在的插件应抛出 PluginManagerError。"""
+        engine, _, _ = _setup_engine()
+
+        with pytest.raises(PluginManagerError, match="插件不存在"):
+            engine.run_single("piano", "nonexistent_plugin")
+
+    def test_run_single_result_accumulated(self) -> None:
+        """多次调用后 engine.result 应正确累积各音轨的和弦结果。"""
+        engine, _, _ = _setup_engine(chord_plugin=MockChordPlugin())
+
+        engine.run_single("piano", "chord_ismir2019")
+        engine.run_single("guitar", "chord_ismir2019")
+
+        assert engine.result is not None
+        assert "piano" in engine.result.chord_events
+        assert "guitar" in engine.result.chord_events
+        assert len(engine.result.chord_events) == 2
+
+    def test_run_single_progress_callback(self) -> None:
+        """应调用 progress_callback 报告插件名和音轨。"""
+        engine, _, _ = _setup_engine(chord_plugin=MockChordPlugin())
+
+        calls = []
+
+        def callback(step, progress):
+            calls.append((step, progress))
+
+        engine.run_single("piano", "chord_ismir2019", progress_callback=callback)
+
+        assert len(calls) == 2
+        assert calls[0] == ("chord_ismir2019:piano", 0.0)
+        assert calls[1] == ("chord_ismir2019:piano", 1.0)

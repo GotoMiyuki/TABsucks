@@ -9,11 +9,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-###########从separator导入分离结果和轨道枚举######################
-from src.plugins.separation.separator import SeparationResult, TrackId
-
 if TYPE_CHECKING:
     from src.audio.loader import AudioData
+    from src.plugins.separation.separator import SeparationResult, TrackId
 
 
 @dataclass
@@ -119,6 +117,7 @@ class Workspace:
             return None
         # 假设 _separation_result 是我们之前写的 SeparationResult 对象
         try:
+            from src.plugins.separation.separator import TrackId
             track_enum = TrackId(self.selected_analysis_track_id)
             return self._separation_result.get_track(track_enum)
         except ValueError:
