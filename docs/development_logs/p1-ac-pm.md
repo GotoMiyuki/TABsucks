@@ -1,5 +1,11 @@
 # 开发日志：分离插件架构对齐 — model_1 插件化改造
 
+
+该分支继承的ui-layer
+该分支继承的ui-layer
+该分支继承的ui-layer
+
+
 **日期：** 2026-07-10
 **涉及模块：**
 1. `src/plugins/separation/model_1/separator.py`（新建）
