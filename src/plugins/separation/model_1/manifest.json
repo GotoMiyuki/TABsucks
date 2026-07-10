@@ -1,0 +1,19 @@
+{
+  "plugins": [
+    {
+      "name": "separation_bs_roformer",
+      "class": "SeparationPlugin",
+      "entrypoint": "src.plugins.separation.model_1.separator",
+      "display_name": "BS-RoFormer 6-Stem Audio Separator",
+      "version": "1.0.0",
+      "input_stems": [],
+      "output": "separated_stems",
+      "requirements": {
+        "gpu_memory_mb": 4096,
+        "ram_mb_min": 2048,
+        "python_packages": ["torch", "numpy", "soundfile", "audio-separator", "onnxruntime-gpu"]
+      },
+      "phase": "separation"
+    }
+  ]
+}
