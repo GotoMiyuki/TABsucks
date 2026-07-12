@@ -1,4 +1,18 @@
-"""车间管理模块：一个车间 = 一段音频 + 四个 Tab 的状态。"""
+"""车间管理模块（**已废弃**）：一个车间 = 一段音频 + 四个 Tab 的状态。
+
+.. deprecated:: v0.2
+    本文件已被 :py:mod:`src.kernel.core.workshop` + :py:mod:`src.kernel.core.cache_system`
+    取代。新设计依据 ``docs/meetings/2026-6-16-meeting.md``，将"运行时表示
+    (MusicWorkshop)"与"持久化 (WorkshopState)"分离，并引入 cache 目录树。
+    本文件保留仅作向后兼容与参考，**新代码请勿引用**。
+
+迁移指南：
+
+* ``Workspace``             → :py:class:`~src.kernel.core.workshop.MusicWorkshop`
+* ``Workspace.name``        → :py:attr:`~src.kernel.core.workshop.MusicWorkshop.name`
+* ``track_states``          → :py:attr:`~src.kernel.core.workshop.WorkshopState.tab_state.tab4`
+* ``selected_analysis_track_id`` → 改由 Tab3 的 per-track analysis task 承载
+"""
 
 from __future__ import annotations
 
