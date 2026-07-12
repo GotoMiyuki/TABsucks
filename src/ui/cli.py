@@ -56,6 +56,15 @@ def main(argv: list[str] | None = None) -> None:
     )
     args = parser.parse_args(argv)
 
+    # Windows 中文 codepage fix：Python 默认 cp1252 打印中文会乱码
+    try:
+        import sys
+
+        sys.stdout.reconfigure(encoding="utf-8")  # type: ignore[attr-defined]
+        sys.stderr.reconfigure(encoding="utf-8")  # type: ignore[attr-defined]
+    except (AttributeError, Exception):  # noqa: BLE001
+        pass
+
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
@@ -75,13 +84,28 @@ def main(argv: list[str] | None = None) -> None:
         logger.warning("  失败车间: %s", reason)
 
     app = make_app(kernel)
-    uvicorn.run(
-        app,
-        host=args.host,
-        port=args.port,
-        reload=args.reload,
-        log_level="info",
-    )
+
+    if args.reload:
+        # ``uvicorn --reload`` 必须 import string。主进程先把 app 注入
+        # ``src.ui.server.app``，然后 uvicorn fork 出 reload worker；
+        # worker re-import ``src.ui.server`` 时 app 已就绪（且 cache_root 一致）。
+        from src.ui import server as _server_module
+        _server_module._install_default_app()
+
+        uvicorn.run(
+            "src.ui.server:app",
+            host=args.host,
+            port=args.port,
+            reload=True,
+            log_level="info",
+        )
+    else:
+        uvicorn.run(
+            app,
+            host=args.host,
+            port=args.port,
+            log_level="info",
+        )
 
 
 if __name__ == "__main__":

@@ -13,7 +13,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import io
 import json
 import math
@@ -21,7 +20,7 @@ import random
 import struct
 from pathlib import Path
 
-from fastapi import APIRouter, BackgroundTasks, File, HTTPException, Request, UploadFile
+from fastapi import APIRouter, File, HTTPException, Request, UploadFile
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
@@ -111,89 +110,121 @@ async def upload_audio(
 
 
 # ---------------------------------------------------------------------------
+# URL 上传（**真实现**：调用 audio/loader.download_audio_from_url + 写 cache）
+# ---------------------------------------------------------------------------
+
+
+class UploadFromUrlRequest(BaseModel):
+    url: str
+
+
+@router.post("/workshops/{wid}/upload-by-url")
+async def upload_from_url(
+    wid: str,
+    req: UploadFromUrlRequest,
+    request: Request,
+) -> dict:
+    """从 URL（YouTube/Bilibili）下载音频并写入 ``cache/workshop_<wid>/raw_audio/``。
+
+    流程：
+    1. ``audio/loader.py::download_audio_from_url`` —— yt-dlp + ffmpeg 落到本地临时
+    2. 读 ``Path.read_bytes()`` 成 bytes
+    3. 调 :py:meth:`MusicWorkshop.set_raw_audio_from_bytes` 写 cache + 自动命名
+
+    Returns:
+        ``{"ok": true, "filename": <落盘文件>, "name": <车间名>}``
+    """
+    kernel = _kernel(request)
+    ws = kernel.manager.get(wid)
+    if ws is None:
+        _err(404, f"车间 {wid} 不存在")
+
+    url = (req.url or "").strip()
+    if not url:
+        _err(400, "URL 不能为空")
+    if not (url.startswith("http://") or url.startswith("https://")):
+        _err(400, "URL 必须以 http(s):// 开头")
+
+    try:
+        # 1. 下载到临时文件（按 yt-dlp 后端格式自动选择 wav/mp3/m4a）
+        from src.audio.loader import download_audio_from_url
+
+        cache_dir = ws.cache.root / f"workshop_{wid}" / "raw_audio"
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        tmp_path = download_audio_from_url(url, format="mp3")  # type: ignore[arg-type]
+        # 2. 读 bytes
+        content = tmp_path.read_bytes()
+        # 3. 落 cache（用 URL 末段或 yt-dlp 给的 stem 作 filename）
+        safe_name = Path(url.split("?")[0].rstrip("/").split("/")[-1] or "yt_audio.mp3")
+        if not safe_name.suffix:
+            safe_name = safe_name.with_suffix(".mp3")
+        abs_path = ws.set_raw_audio_from_bytes(content, safe_name.name)
+    except Exception as e:  # noqa: BLE001
+        _err(500, f"URL 上传失败: {e}")
+
+    return {
+        "ok": True,
+        "filename": abs_path.name,
+        "name": ws.name,
+        "rel_path": ws.state.tab_state.tab1.raw_audio_file_path,
+    }
+
+
+# ---------------------------------------------------------------------------
 # 分离（**MOCK**，替换点 A）
 # ---------------------------------------------------------------------------
 
 
 @router.post("/workshops/{wid}/separate")
-def trigger_separation(
+async def trigger_separation(
     wid: str,
     req: SeparateRequest,
-    background: BackgroundTasks,
     request: Request,
 ) -> dict:
-    """[MOCK] 替换点 A：接入真正 ``SeparatorPlugin.run()``。"""
+    """**真实现**：调 :py:meth:`Kernel.start_separation_task` 启动。
+
+    进度经 EventBus 推到 SSE，前端订阅 ``separation_progress`` / ``separation_done`` /
+    ``separation_failed``。返回 ``{"ok": true, "task": "<plugin>"}`` 即可，
+    不阻塞 request。
+    """
     kernel = _kernel(request)
     if kernel.manager.get(wid) is None:
         _err(404, f"车间 {wid} 不存在")
-    bus = _bus(request)
-    background.add_task(_run_mock_separation, wid, req.model, bus)
-    return {"ok": True, "message": "分离已启动"}
-
-
-async def _run_mock_separation(wid: str, model: str, bus) -> None:
-    """[MOCK] 用 asyncio sleep 模拟分离进度。"""
-    bus.emit(wid, "separation_started", {"model": model})
-    for i in range(101):
-        await asyncio.sleep(0.03)
-        if i % 10 == 0:
-            bus.emit(
-                wid,
-                "separation_progress",
-                {"progress": i / 100.0},
-            )
-    bus.emit(
+    # 由 Orchestrator.start_separation 异步 emit "separation_started/progress/done"
+    kernel.start_separation_task(
         wid,
-        "separation_done",
-        {
-            "stems": [
-                "vocals",
-                "drums",
-                "bass",
-                "piano",
-                "guitar",
-                "other",
-            ],
-        },
+        plugin_name=req.model,
+        durations_sec=3.0,
     )
+    # 不 await — 让 FastAPI BackgroundTasks 的协程跑完
+    return {"ok": True, "task": req.model}
 
 
 # ---------------------------------------------------------------------------
-# 分析（**MOCK**，替换点 B）
+# 分析（**真实现**，替换点 B —— 接 Kernel.start_analysis_task）
 # ---------------------------------------------------------------------------
 
 
 @router.post("/workshops/{wid}/analyze")
-def trigger_analysis(
+async def trigger_analysis(
     wid: str,
     req: AnalyzeRequest,
-    background: BackgroundTasks,
     request: Request,
 ) -> dict:
-    """[MOCK] 替换点 B：接入真正 ``AnalysisPlugin.run()``。"""
+    """**真实现**：调 :py:meth:`Kernel.start_analysis_task`。
+
+    事件经 EventBus → SSE：``analysis_started / progress / done / failed``。
+    """
     kernel = _kernel(request)
     if kernel.manager.get(wid) is None:
         _err(404, f"车间 {wid} 不存在")
-    bus = _bus(request)
-    background.add_task(_run_mock_analysis, wid, req.track, req.plugin, bus)
-    return {"ok": True, "message": f"分析 {req.track} 已启动"}
-
-
-async def _run_mock_analysis(
-    wid: str, track: str, plugin: str, bus
-) -> None:
-    """[MOCK] mock 一次分析，约 1.5s 完成。"""
-    bus.emit(wid, "analysis_started", {"track": track, "plugin": plugin})
-    await asyncio.sleep(1.5)
-    bus.emit(
+    kernel.start_analysis_task(
         wid,
-        "analysis_done",
-        {
-            "track": track,
-            "plugin": plugin,
-            "result": _mock_analysis_result(track),
-        },
+        plugin_name=req.plugin,
+        stem_name=req.track,
+        durations_sec=1.5,
     )
+    return {"ok": True, "task": req.plugin}
 
 
 # ---------------------------------------------------------------------------

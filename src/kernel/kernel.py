@@ -37,6 +37,10 @@ from typing import Any, Literal
 from src.kernel.core.cache_system import (  # noqa: F401
     CACHE_ROOT_DEFAULT,
 )
+from src.kernel.core.kernel_orchestrator import (  # noqa: F401
+    Orchestrator,
+    make_progress_callback,
+)
 from src.kernel.core.workshop import (  # noqa: F401
     WorkshopManager,
 )
@@ -179,6 +183,7 @@ class Kernel:
         self.bus: EventBus = event_bus or EventBus()
         self._autosave = autosave
         self.manager: WorkshopManager | None = None
+        self.orchestrator: Orchestrator | None = None
         self._shutdown = threading.Event()
 
     # ------------------------------------------------------------------
@@ -191,6 +196,7 @@ class Kernel:
         Returns:
             ``(loaded_count, failed)``
         """
+        self.orchestrator = Orchestrator()
         self.manager = WorkshopManager(
             cache_root=self.cache_root,
             event_bus=self.bus,
@@ -292,6 +298,74 @@ class Kernel:
     def subscribe_events(self) -> Queue[WorkshopEvent]:
         """HTTP SSE 端点调这个，回 Queue 给客户端。"""
         return self.bus.subscribe()
+
+    # ------------------------------------------------------------------
+    # 编排层快捷方法（编排 PM/AE/RC）
+    # ------------------------------------------------------------------
+
+    def _require_orchestrator(self) -> Orchestrator:
+        if self.orchestrator is None:
+            raise RuntimeError("Kernel 未启动，请先调用 boot()")
+        return self.orchestrator
+
+    def list_separator_plugins(self) -> list[dict[str, Any]]:
+        """列出可用的分离插件（给 UI 下拉列表）。
+
+        编排层委托：MVP 阶段返回 ``Orchestrator.list_separator_plugins()``
+        列表。未来走 :py:mod:`src.plugins.separation` 的 manifest 扫盘。
+        """
+        return self._require_orchestrator().list_separator_plugins()
+
+    def list_analyzer_plugins(self) -> list[dict[str, Any]]:
+        """列出可用的分析插件。"""
+        return self._require_orchestrator().list_analyzer_plugins()
+
+    def start_separation_task(
+        self,
+        wid: str,
+        *,
+        plugin_name: str = "example_separator",
+        audio_samples=None,
+        sample_rate: int = 22050,
+        durations_sec: float = 3.0,
+    ):
+        """异步启动分离任务。
+
+        Returns:
+            :py:class:`asyncio.Task`，业务方 await 拿到 plugin 返回的 dict。
+        """
+        orch = self._require_orchestrator()
+        import numpy as np
+
+        if audio_samples is not None:
+            arr = np.asarray(audio_samples, dtype=np.float32)
+            orch.rc.set_buffer("raw", arr)
+            orch.rc.set_metadata("sample_rate", int(sample_rate))
+
+        return orch.start_separation(
+            wid,
+            self.bus,
+            plugin_name=plugin_name,
+            durations_sec=durations_sec,
+        )
+
+    def start_analysis_task(
+        self,
+        wid: str,
+        *,
+        plugin_name: str = "example_analyzer",
+        stem_name: str = "vocals",
+        durations_sec: float = 1.5,
+    ):
+        """异步启动分析任务。"""
+        orch = self._require_orchestrator()
+        return orch.start_analysis(
+            wid,
+            self.bus,
+            plugin_name=plugin_name,
+            stem_name=stem_name,
+            durations_sec=durations_sec,
+        )
 
 
 # ---------------------------------------------------------------------------

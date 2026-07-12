@@ -18,14 +18,14 @@ from __future__ import annotations
 
 import json
 import uuid
-import numpy as np
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+import numpy as np
+
 if TYPE_CHECKING:
-    from src.audio.loader import AudioData
-    from src.plugins.separation.separator import SeparationResult, TrackId
+    from src.plugins.separation.separator import SeparationResult
 
 
 @dataclass
@@ -53,7 +53,7 @@ class Workspace:
     # 分析结果缓存
     _beat_info: dict | None = field(default=None, repr=False)
     _chord_events: list | None = field(default=None, repr=False)
-    
+
     # 将原来的 dict 改写为具体的 SeparationResult 类型
     _separation_result: SeparationResult | None = field(default=None, repr=False)
 
@@ -114,7 +114,7 @@ class Workspace:
         with path.open("r", encoding="utf-8") as f:
             data = json.load(f)
         return cls.from_dict(data)
-    
+
     ##############轨道选择新添加##############
     selected_analysis_track_id: str | None = None
 

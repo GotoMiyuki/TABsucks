@@ -98,6 +98,14 @@ const api = {
         });
     },
 
+    async uploadFromUrl(wid, url) {
+        return this._fetchJSON(`${this._baseURL}/workshops/${wid}/upload-by-url`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ url }),
+        });
+    },
+
     async separate(wid, model = 'BS-RoFormer-SW') {
         return this._fetchJSON(`${this._baseURL}/workshops/${wid}/separate`, {
             method: 'POST',

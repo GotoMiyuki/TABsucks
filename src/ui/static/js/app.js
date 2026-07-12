@@ -138,15 +138,26 @@ async function handleNewWorkshop() {
     state.busy = true;
     setBusyOverlay(true);
     const r = await api.createWorkshop('New Workshop');
-    state.busy = false;
-    setBusyOverlay(false);
     if (!r.ok) {
-        showToast(`新建失败: ${r.error}`, 'error');
+        state.busy = false;
+        setBusyOverlay(false);
+        showToast(`新建失败: ${r.error || '未知错误'}`, 'error');
+        return;
+    }
+    // 后端返回的是 {id, name, last_tab} dict（wrapped to {ok:true, data: dict}）
+    const info = r.data || r;
+    const newWid = info.id;
+    if (!newWid) {
+        state.busy = false;
+        setBusyOverlay(false);
+        showToast(`新建失败: 未返回 id`, 'error');
         return;
     }
     await refreshWorkshopList();
     // 自动激活新车间
-    await handleSwitchWorkshop(r.id || (r.data && r.data.id));
+    await handleSwitchWorkshop(newWid);
+    state.busy = false;
+    setBusyOverlay(false);
 }
 
 async function handleSwitchWorkshop(wid) {
@@ -166,6 +177,9 @@ async function handleSwitchWorkshop(wid) {
     }
     state.currentWid = wid;
     await refreshWorkshopList();
+    // refreshWorkshopList 内部 renderWorkshopList → renderWelcomePanel
+    // 第二次 render 确保 mainPanels 显示（创建车间后 currentWid 不再 null）
+    renderWelcomePanel();
     await loadActiveWorkshopData();
     state.busy = false;
     document.body.classList.remove('busy');
@@ -192,6 +206,7 @@ async function handleCloseWorkshop(wid) {
         state.currentWid = null;
     }
     await refreshWorkshopList();
+    renderWelcomePanel();    // 确保 mainPanels 重新隐藏
     state.busy = false;
     setControlsDisabled(false);
     document.body.classList.remove('busy');
@@ -281,9 +296,33 @@ function bindStep1() {
     document.getElementById('btn-upload-file')?.addEventListener('click', () => fileInput.click());
     fileInput?.addEventListener('change', handleFileUpload);
 
-    document.getElementById('btn-upload-url')?.addEventListener('click', () => {
-        document.getElementById('input-url-wrap')?.classList.toggle('hidden');
-    });
+    const urlBtn = document.getElementById('btn-upload-url');
+    const urlWrap = document.getElementById('input-url-wrap');
+    if (urlBtn && urlWrap) {
+        urlBtn.addEventListener('click', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            console.log('[TAB1] toggle URL wrap, was hidden:', urlWrap.classList.contains('hidden'));
+            if (urlWrap.classList.contains('hidden')) {
+                urlWrap.classList.remove('hidden');
+                const input = document.getElementById('input-url');
+                if (input) input.focus();
+            } else {
+                urlWrap.classList.add('hidden');
+            }
+            console.log('[TAB1] now hidden:', urlWrap.classList.contains('hidden'));
+        });
+    } else {
+        // debug: 暴露缺失 id
+        console.warn('[TAB1] bind failed: urlBtn=', !!urlBtn, 'urlWrap=', !!urlWrap);
+    }
+    // debug: 暴露到 window 供 console 手动调用
+    window.__toggleUrlWrap = function () {
+        if (!urlWrap) return 'no urlWrap element';
+        const wasHidden = urlWrap.classList.contains('hidden');
+        urlWrap.classList.toggle('hidden');
+        return `was hidden=${wasHidden}, now hidden=${urlWrap.classList.contains('hidden')}`;
+    };
     document.getElementById('btn-fetch')?.addEventListener('click', handleUrlFetch);
 
     document.getElementById('btn-delete-active')?.addEventListener('click', handleDeleteActive);
@@ -303,9 +342,56 @@ async function handleFileUpload(e) {
 }
 
 async function handleUrlFetch() {
-    const url = document.getElementById('input-url')?.value?.trim();
-    if (!url) return;
-    showToast('URL 下载流程待实现（需要 YT/Bili 库）', 'info');
+    if (state.busy) return;
+    const urlInput = document.getElementById('input-url');
+    const url = urlInput?.value?.trim();
+    if (!url) {
+        showToast('请粘贴音频 / 视频 URL', 'warning');
+        return;
+    }
+    if (!(url.startsWith('http://') || url.startsWith('https://'))) {
+        showToast('URL 必须以 http(s):// 开头', 'error');
+        return;
+    }
+    state.busy = true;
+    setBusyOverlay(true);
+    setControlsDisabled(true);
+
+    // 1. 准备一个 active 车间（如果没有就新建）
+    let wid = state.currentWid;
+    if (!wid) {
+        const created = await api.createWorkshop('Loading from URL…');
+        if (!created.ok) {
+            state.busy = false;
+            setBusyOverlay(false);
+            setControlsDisabled(false);
+            showToast(`新建失败: ${created.error}`, 'error');
+            return;
+        }
+        const info = created.data || created;
+        wid = info.id;
+        await refreshWorkshopList();
+        await handleSwitchWorkshop(wid);
+    }
+
+    showToast('下载音频中（首次跑 yt-dlp 会下载模型/依赖）…', 'info');
+
+    // 2. 调后端 URL 上传
+    const r = await api.uploadFromUrl(wid, url);
+    state.busy = false;
+    setBusyOverlay(false);
+    setControlsDisabled(false);
+
+    if (!r.ok) {
+        showToast(`URL 上传失败: ${r.error || '未知错误'}`, 'error');
+        return;
+    }
+    const info = r.data || r;
+    showAudioInfo(info.filename);
+    showToast(`下载完成: ${info.name}`, 'success');
+    // 3. 切到 Step 2
+    state.separated = false;
+    setStep(2);
 }
 
 async function ensureWorkshopAndRun(fn) {
@@ -313,7 +399,12 @@ async function ensureWorkshopAndRun(fn) {
     if (!wid) {
         const r = await api.createWorkshop('New Workshop');
         if (!r.ok) { showToast(`新建车间失败: ${r.error}`, 'error'); return; }
-        wid = r.id || r.data.id;
+        const info = r.data || r;
+        wid = info.id;
+        if (!wid) {
+            showToast(`新建车间失败: 未返回 id`, 'error');
+            return;
+        }
         await refreshWorkshopList();
         await handleSwitchWorkshop(wid);
     }
