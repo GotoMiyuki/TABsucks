@@ -29,16 +29,17 @@
 
         <!-- ═══ 主区域 ═══ -->
         <main id="main">
-            <!-- 顶部步骤指示器 -->
+            <!-- 顶部 Tab 指示器 -->
             <nav id="step-bar">
-                <div class="step-indicator active" data-step="1">INPUT</div>
-                <div class="step-indicator" data-step="2">SELECT</div>
-                <div class="step-indicator" data-step="3">OUTPUT</div>
+                <div class="step-indicator active" data-tab="1">Tab1 音频输入</div>
+                <div class="step-indicator" data-tab="2">Tab2 音轨分离</div>
+                <div class="step-indicator" data-tab="3">Tab3 音轨分析</div>
+                <div class="step-indicator" data-tab="4">Tab4 播放导出</div>
             </nav>
 
-            <!-- 步骤内容区 -->
+            <!-- Tab 内容区 -->
             <div id="step-content">
-                <!-- ─── STEP 1: INPUT ─── -->
+                <!-- ─── Tab1: 音频输入 ─── -->
                 <section id="step-1" class="step-panel active">
                     <div class="step-center">
                         <div class="upload-row">
@@ -66,6 +67,14 @@
                             <span class="info-tag" id="info-duration">-</span>
                             <span class="info-tag" id="info-samplerate">-</span>
                         </div>
+                        <!-- 下载进度条（URL 上传时显示） -->
+                        <div id="dl-progress-wrap" class="dl-progress-wrap hidden">
+                            <progress id="dl-progress-bar" value="0" max="100" class="dl-progress"></progress>
+                            <span id="dl-progress-text" class="dl-progress-text">0%</span>
+                        </div>
+                        <button id="btn-continue-tab2" type="button" class="btn-pill hidden" style="max-width:200px">
+                            继续 → Tab2
+                        </button>
                     </div>
                 </section>
 
@@ -73,7 +82,20 @@
                 <section id="step-2" class="step-panel">
                     <!-- 阶段 2a: 分离模型 + 选音轨 -->
                     <div id="phase-separate">
-                        <button id="btn-model" class="btn-rect-sm top-right-abs">MODEL</button>
+                        <div class="sep-model-row">
+                            <label class="sep-model-label">分离模型</label>
+                            <select id="sel-separator" class="sel-separator" title="选择分离模型">
+                                <option value="">— 加载中… —</option>
+                            </select>
+                            <button id="btn-start-sep" type="button" class="btn-pill-sm">开始分离</button>
+                            <div class="sep-ring-wrap hidden" id="sep-ring-wrap-2">
+                                <svg class="sep-ring" viewBox="0 0 44 44">
+                                    <circle class="sep-ring-bg" cx="22" cy="22" r="18" />
+                                    <circle class="sep-ring-fg" id="sep-ring-fg-2" cx="22" cy="22" r="18" />
+                                </svg>
+                                <span class="sep-ring-label" id="sep-ring-label-2">0%</span>
+                            </div>
+                        </div>
                         <p class="step-hint">select your separator and tracks</p>
                         <div id="stem-grid" class="stem-grid-2x3">
                             <!-- 6 个音轨大方块，JS 动态生成 -->
@@ -83,16 +105,23 @@
                     <div id="phase-analyze" class="hidden">
                         <p class="step-hint">select your analyzers</p>
                         <div id="analysis-config-list" class="analysis-config-list"></div>
-                        <button id="btn-run-all" class="btn-pill" style="margin-top:20px;max-width:560px">run all</button>
+                        <button id="btn-run-all" class="btn-pill btn-run-all">run all</button>
                     </div>
                 </section>
 
-                <!-- ─── STEP 3: OUTPUT (时间轴) ─── -->
+                <!-- ─── Tab3: 音轨分析 ─── -->
                 <section id="step-3" class="step-panel">
                     <div class="timeline-container">
                         <div id="track-timeline-list" class="track-timeline-list">
                             <p class="empty-msg">complete analysis first</p>
                         </div>
+                    </div>
+                </section>
+
+                <!-- ─── Tab4: 播放 / 导出 ─── -->
+                <section id="step-4" class="step-panel">
+                    <div class="step-center">
+                        <p class="empty-msg">完成分析后可查看可视化与播放</p>
                     </div>
                 </section>
             </div>
@@ -113,6 +142,6 @@
         </main>
     </div>
 
-    <script type="module" src="/static/js/app.js?v=20260712c"></script>
+    <script type="module" src="/static/js/app.js?v=20260712g"></script>
 </body>
 </html>

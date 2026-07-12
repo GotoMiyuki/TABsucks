@@ -145,22 +145,43 @@ async def upload_from_url(
     if not (url.startswith("http://") or url.startswith("https://")):
         _err(400, "URL 必须以 http(s):// 开头")
 
-    try:
-        # 1. 下载到临时文件（按 yt-dlp 后端格式自动选择 wav/mp3/m4a）
-        from src.audio.loader import download_audio_from_url
+    from src.audio.loader import download_audio_from_url, get_video_title
 
-        cache_dir = ws.cache.root / f"workshop_{wid}" / "raw_audio"
-        cache_dir.mkdir(parents=True, exist_ok=True)
-        tmp_path = download_audio_from_url(url, format="mp3")  # type: ignore[arg-type]
-        # 2. 读 bytes
+    try:
+        # 1. 先拿标题（用于自动命名车间）
+        raw_title = get_video_title(url)
+        if raw_title and ws.name == "New Workshop":
+            from src.utils.naming import sanitize_title
+            ws.rename(sanitize_title(raw_title))
+
+        # 2. 下载音频（带进度回调 → SSE 推给前端）
+        bus = _bus(request)
+
+        def progress_hook(d: dict) -> None:
+            if d.get("status") == "downloading":
+                pct_str = d.get("_percent_str", "0%").replace("%", "")
+                try:
+                    pct = float(pct_str) / 100.0
+                except (ValueError, TypeError):
+                    pct = 0.0
+                bus.emit(wid, "url_download_progress", {"progress": pct})
+
+        tmp_path = download_audio_from_url(
+            url, format="mp3", progress_hook=progress_hook
+        )  # type: ignore[arg-type]
+        bus.emit(wid, "url_download_progress", {"progress": 1.0})
+
+        # 3. 落 cache
         content = tmp_path.read_bytes()
-        # 3. 落 cache（用 URL 末段或 yt-dlp 给的 stem 作 filename）
         safe_name = Path(url.split("?")[0].rstrip("/").split("/")[-1] or "yt_audio.mp3")
         if not safe_name.suffix:
-            safe_name = safe_name.with_suffix(".mp3")
+            safe_name = safe_name.with_suffix(safe_name.suffix or ".mp3")
         abs_path = ws.set_raw_audio_from_bytes(content, safe_name.name)
     except Exception as e:  # noqa: BLE001
-        _err(500, f"URL 上传失败: {e}")
+        msg = str(e)
+        if "412" in msg or "bilibili" in msg.lower():
+            msg += "（B站近期风控升级，yt-dlp 暂未适配）"
+        _err(500, f"URL 下载失败: {msg}")
 
     return {
         "ok": True,

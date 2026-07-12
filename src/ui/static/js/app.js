@@ -48,6 +48,16 @@ const stream = new EventStream();
 //  Init
 // ══════════════════════════════════════
 
+function bindNavigation() {
+    // Tab 指示器点击
+    document.querySelectorAll('.step-indicator').forEach(el => {
+        el.addEventListener('click', () => {
+            const tab = parseInt(el.dataset.tab, 10);
+            if (tab >= 1 && tab <= 4) setTab(tab);
+        });
+    });
+}
+
 document.addEventListener('DOMContentLoaded', async () => {
     bindNavigation();
     bindStep1();
@@ -59,7 +69,8 @@ document.addEventListener('DOMContentLoaded', async () => {
         .on('separation_progress', p => updateSepProgress(p.progress))
         .on('separation_done', () => onSeparationDone())
         .on('analysis_started', p => onAnalysisStarted(p.track))
-        .on('analysis_done', p => onAnalysisDone(p));
+        .on('analysis_done', p => onAnalysisDone(p))
+        .on('url_download_progress', p => updateDlProgress(p.progress));
 
     // 启动时建立 SSE（一次连接永久用，按 wid 过滤）
     try {
@@ -252,30 +263,33 @@ function setControlsDisabled(disabled) {
 
 async function loadActiveWorkshopData() {
     if (!state.currentWid) return;
-    // 先拉一次 state 看看 Tab1 / Tab2 走到哪
     const r = await api.getWorkshopState(state.currentWid);
     if (!r.ok) {
         showToast(`加载失败: ${r.error || r}`, 'error');
         return;
     }
     const s = r.data || r;
-    // 各 Tab 数据由 WorkshopState 决定显示
-    const hasRaw = !!(s.TabState && s.TabState.Tab1 && s.TabState.Tab1.RawAudioFilePath);
-    const tab2 = s.TabState && s.TabState.Tab2;
-    const sepDone = tab2 && tab2.SeparationState === 'done';
 
-    if (!hasRaw) {
-        setStep(1);
-    } else if (!sepDone) {
-        setStep(2);
-        state.separated = false;
-    } else {
-        setStep(3);
-        state.separated = true;
-    }
+    // 优先：恢复上次离开时所在的 Tab（LastTab 字段）
+    const lastTabMap = { Tab1: 1, Tab2: 2, Tab3: 3, Tab4: 4 };
+    const lastStep = lastTabMap[s.LastTab] || 1;
+    // 用数据推导限制
+    const hasRaw = !!(s.TabState?.Tab1?.RawAudioFilePath);
+    const sepDone = s.TabState?.Tab2?.SeparationState === 'done';
+    const hasAnalysis = Object.values(s.TabState?.Tab3 || {}).some(
+        t => t.AnalysisState === 'done'
+    );
+
+    let targetTab = lastStep;
+    if (!hasRaw && targetTab > 1) targetTab = 1;
+    if (!sepDone && targetTab > 2) targetTab = 2;
+    if (!hasAnalysis && targetTab > 3) targetTab = 3;
+
+    setTab(targetTab);
+    state.separated = targetTab >= 3;
 }
 
-function setStep(n) {
+function setTab(n) {
     state.step = n;
     document.querySelectorAll('.step-panel').forEach(p => p.classList.remove('active'));
     document.querySelector(`.step-panel#step-${n}`)?.classList.add('active');
@@ -335,9 +349,10 @@ async function handleFileUpload(e) {
         const r = await api.uploadAudio(wid, file);
         if (!r.ok) { showToast(`上传失败: ${r.error}`, 'error'); return; }
         showAudioInfo(file.name);
-        // 上传完跳到 Step 2
-        state.separated = false;
-        setStep(2);
+        showToast(`上传完成`, 'success');
+        await refreshWorkshopList();
+        // 不自动跳转——等用户点「继续」
+        document.getElementById('btn-continue-tab2')?.classList.remove('hidden');
     });
 }
 
@@ -345,28 +360,22 @@ async function handleUrlFetch() {
     if (state.busy) return;
     const urlInput = document.getElementById('input-url');
     const url = urlInput?.value?.trim();
-    if (!url) {
-        showToast('请粘贴音频 / 视频 URL', 'warning');
-        return;
-    }
+    if (!url) { showToast('请粘贴音频 / 视频 URL', 'warning'); return; }
     if (!(url.startsWith('http://') || url.startsWith('https://'))) {
-        showToast('URL 必须以 http(s):// 开头', 'error');
-        return;
+        showToast('URL 必须以 http(s):// 开头', 'error'); return;
     }
     state.busy = true;
-    setBusyOverlay(true);
     setControlsDisabled(true);
+    document.body.classList.add('busy');
 
-    // 1. 准备一个 active 车间（如果没有就新建）
+    // 1. 准备 active 车间
     let wid = state.currentWid;
     if (!wid) {
         const created = await api.createWorkshop('Loading from URL…');
         if (!created.ok) {
-            state.busy = false;
-            setBusyOverlay(false);
-            setControlsDisabled(false);
-            showToast(`新建失败: ${created.error}`, 'error');
-            return;
+            state.busy = false; setControlsDisabled(false);
+            document.body.classList.remove('busy');
+            showToast(`新建失败: ${created.error}`, 'error'); return;
         }
         const info = created.data || created;
         wid = info.id;
@@ -374,24 +383,30 @@ async function handleUrlFetch() {
         await handleSwitchWorkshop(wid);
     }
 
-    showToast('下载音频中（首次跑 yt-dlp 会下载模型/依赖）…', 'info');
+    // 2. 显示进度条
+    const progWrap = document.getElementById('dl-progress-wrap');
+    const progBar = document.getElementById('dl-progress-bar');
+    const progText = document.getElementById('dl-progress-text');
+    if (progWrap) progWrap.classList.remove('hidden');
+    showToast('下载音频中…', 'info');
 
-    // 2. 调后端 URL 上传
+    // 3. 调后端
     const r = await api.uploadFromUrl(wid, url);
     state.busy = false;
-    setBusyOverlay(false);
     setControlsDisabled(false);
+    document.body.classList.remove('busy');
+    if (progWrap) progWrap.classList.add('hidden');
 
     if (!r.ok) {
-        showToast(`URL 上传失败: ${r.error || '未知错误'}`, 'error');
-        return;
+        showToast(`URL 上传失败: ${r.error || '未知错误'}`, 'error'); return;
     }
     const info = r.data || r;
     showAudioInfo(info.filename);
     showToast(`下载完成: ${info.name}`, 'success');
-    // 3. 切到 Step 2
-    state.separated = false;
-    setStep(2);
+    // 侧边栏刷新（车间名已经从视频标题更新）
+    await refreshWorkshopList();
+    // 不自动跳转——等待用户点「继续」
+    document.getElementById('btn-continue-tab2')?.classList.remove('hidden');
 }
 
 async function ensureWorkshopAndRun(fn) {
@@ -436,14 +451,20 @@ function showToast(msg, kind = 'info') {
 // ══════════════════════════════════════
 
 function bindStep2() {
-    document.querySelectorAll('.step-indicator').forEach(el =>
-        el.addEventListener('click', () => {
-            const stepIdx = parseInt(el.dataset.step, 10);
-            if (stepIdx) setStep(stepIdx);
-        })
-    );
-    const btnModel = document.getElementById('btn-model');
-    btnModel?.addEventListener('click', triggerSeparation);
+    // 下拉填充模型列表（进入 Tab2 时拉一次）
+    const sel = document.getElementById('sel-separator');
+    if (sel) {
+        (async () => {
+            const r = await api.listSeparatorPlugins();
+            if (!r.ok) { sel.innerHTML = '<option value="">— 加载失败 —</option>'; return; }
+            const list = r.data || r;
+            sel.innerHTML = list.map(p =>
+                `<option value="${p.name}">${p.display_name}</option>`
+            ).join('') || '<option value="">— 无可用模型 —</option>';
+        })();
+    }
+
+    document.getElementById('btn-start-sep')?.addEventListener('click', triggerSeparation);
 }
 
 function triggerSeparation() {
@@ -451,24 +472,48 @@ function triggerSeparation() {
         showToast('请先创建车间', 'warning');
         return;
     }
-    api.separate(state.currentWid).then(r => {
+    const sel = document.getElementById('sel-separator');
+    const model = sel?.value;
+    if (!model) {
+        showToast('请先在下拉列表中选择分离模型', 'warning');
+        return;
+    }
+    // 显示进度环
+    document.getElementById('sep-ring-wrap-2')?.classList.remove('hidden');
+    api.separate(state.currentWid, model).then(r => {
         if (!r.ok) { showToast(`启动分离失败: ${r.error}`, 'error'); return; }
         showToast('分离任务已启动，等待结果...', 'info');
     });
 }
 
+function updateDlProgress(p) {
+    const bar = document.getElementById('dl-progress-bar');
+    const text = document.getElementById('dl-progress-text');
+    const wrap = document.getElementById('dl-progress-wrap');
+    if (bar) bar.value = Math.round(p * 100);
+    if (text) text.textContent = `${Math.round(p * 100)}%`;
+    if (wrap) wrap.classList.remove('hidden');
+}
+
 function updateSepProgress(p) {
-    document.getElementById('sep-ring-fg')?.setAttribute('stroke-dashoffset',
-        String(120 - 120 * p));
-    document.getElementById('sep-ring-label').textContent =
-        `${(p * 100).toFixed(0)}%`;
+    // 同时更新 Tab1 和 Tab2 的进度环（避免 DOM 重复 id 问题）
+    for (const suffix of ['', '-2']) {
+        const ring = document.getElementById(`sep-ring-fg${suffix}`);
+        const label = document.getElementById(`sep-ring-label${suffix}`);
+        if (ring) ring.setAttribute('stroke-dashoffset', String(120 - 120 * p));
+        if (label) label.textContent = `${(p * 100).toFixed(0)}%`;
+        if (ring) {
+            const wrap = ring.closest('.sep-ring-wrap');
+            if (wrap) wrap.classList.remove('hidden');
+        }
+    }
 }
 
 function onSeparationDone() {
     state.separated = true;
     showToast('分离完成', 'success');
     // 跳到 Step 3（可视化可选展示）
-    setStep(3);
+    setTab(3);
 }
 
 function onAnalysisStarted(track) {
@@ -490,8 +535,9 @@ function onAnalysisDone(payload) {
 function bindPlayback() {
     document.getElementById('btn-play')?.addEventListener('click', togglePlay);
     document.getElementById('seek-bar')?.addEventListener('input', onSeek);
-    document.getElementById('btn-prev')?.addEventListener('click', () => setStep(Math.max(1, state.step - 1)));
-    document.getElementById('btn-next')?.addEventListener('click', () => setStep(Math.min(3, state.step + 1)));
+    document.getElementById('btn-prev')?.addEventListener('click', () => setTab(Math.max(1, state.step - 1)));
+    document.getElementById('btn-next')?.addEventListener('click', () => setTab(Math.min(4, state.step + 1)));
+    document.getElementById('btn-continue-tab2')?.addEventListener('click', () => setTab(2));
 }
 
 function bindSpeedCycle() {

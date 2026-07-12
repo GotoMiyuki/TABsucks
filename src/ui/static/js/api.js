@@ -21,7 +21,10 @@ const api = {
                 return { ok: false, error: `非 JSON 响应 (${res.status})` };
             }
             if (!res.ok) {
-                const err = body && body.error ? body.error : `HTTP ${res.status}`;
+                // 后端错误格式：{"detail":{"error":"..."}} 或 {"error":"..."}
+                const err = (body && body.detail && body.detail.error)
+                    ? body.detail.error
+                    : (body && body.error ? body.error : `HTTP ${res.status}`);
                 return { ok: false, error: err, status: res.status };
             }
             // 兼容两种风格：{ok: true, ...} 或直接的字段
@@ -85,6 +88,16 @@ const api = {
         const r = await this._fetchJSON(`${this._baseURL}/workshops-active`);
         if (!r.ok) return { ok: false, error: r.error };
         return { ok: true, active_id: r.data };
+    },
+
+    // ── 插件列表 ──
+
+    async listSeparatorPlugins() {
+        return this._fetchJSON(`${this._baseURL}/plugins/separators`);
+    },
+
+    async listAnalyzerPlugins() {
+        return this._fetchJSON(`${this._baseURL}/plugins/analyzers`);
     },
 
     // ── 分析 ──

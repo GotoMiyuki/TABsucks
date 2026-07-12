@@ -3,19 +3,29 @@
 > 本文是 [p1-ui-layer.md](p1-ui-layer.md) 的**重构延续**。旧的 mock-only UI 已
 > 替换为基于 `Kernel + EventBus + SSE` 的真实现层，**接上 [p1-workshop-cache-system.md](p1-workshop-cache-system.md) 落地的车间系统**。
 
-**日期：** 2026-07-12
+**日期：** 2026-07-12（最后更新：2026-07-12 第二轮）
 **涉及模块：**
-1. [src/ui/server.py](../../src/ui/server.py)（重写） — `make_app(kernel)` 工厂
+1. [src/ui/server.py](../../src/ui/server.py)（重写） — `make_app(kernel)` 工厂 + `build_default_app` + reload-safe `__getattr__`
 2. [src/ui/api/workshops.py](../../src/ui/api/workshops.py)（重写） — `request.app.state.kernel` 模式
 3. [src/ui/api/events.py](../../src/ui/api/events.py)（重写） — SSE 流
-4. [src/ui/api/analysis.py](../../src/ui/api/analysis.py)（重写） — upload **真实现** + 其余 mock 标 A/B/C/D
-5. [src/ui/cli.py](../../src/ui/cli.py)（**新增**） — `python -m src.ui` 入口
-6. [src/ui/static/index.html](../../src/ui/static/index.html)（改） — 欢迎面板 + × 关闭按钮 + 永久删除按钮
-7. [src/ui/static/js/app.js](../../src/ui/static/js/app.js)（重写） — close / delete / switch 三套流程
-8. [src/ui/static/js/api.js](../../src/ui/static/js/api.js)（重写） — error 兼容、SSE、close/delete 分离
-9. [src/ui/static/js/event_stream.js](../../src/ui/static/js/event_stream.js)（小调） — connect 不再按 wid
-10. [tests/unit/test_http_server.py](../../tests/unit/test_http_server.py)（**新增**） — 27 个测试
-11. [docs/HTTP_API.md](../../HTTP_API.md)（**新增**） — API 文档
+4. [src/ui/api/analysis.py](../../src/ui/api/analysis.py)（重写） — upload **真实现** + URL 上传（`get_video_title` 命名 + progress_bar SSE）+ mock A/B/C/D
+5. [src/ui/api/plugins.py](../../src/ui/api/plugins.py)（**新增**） — `/api/plugins/separators` + `/api/plugins/analyzers`
+6. [src/ui/cli.py](../../src/ui/cli.py)（**新增**） — `python -m src.ui` 入口 + `sys.stdout.reconfigure(utf-8)`
+7. [src/ui/__main__.py](../../src/ui/__main__.py)（**新增**） — Python 包入口
+8. [src/ui/static/index.html](../../src/ui/static/index.html)（改） — 欢迎面板 + × 关闭 + 4 Tabs + 模型下拉 + 继续按钮 + 下载进度条
+9. [src/ui/static/js/app.js](../../src/ui/static/js/app.js)（重写） — close/delete/switch + 4 Tabs + progress bar + video title + 不自动跳转
+10. [src/ui/static/js/api.js](../../src/ui/static/js/api.js)（重写） — error 兼容 + SSE + close/delete + plugin list
+11. [src/ui/static/js/event_stream.js](../../src/ui/static/js/event_stream.js)（小调） — connect 不再按 wid
+12. [src/ui/static/css/style.css](../../src/ui/static/css/style.css)（改） — sep-model-row + sel-separator + welcome-panel + toast + btn-danger + workspace-close
+13. [src/kernel/core/kernel_orchestrator.py](../../src/kernel/core/kernel_orchestrator.py)（**新增**） — Orchestrator + PM/AE 编排
+14. [src/plugins/_example_separator/](../../src/plugins/_example_separator/)（**新增**） — mock 分离器范本
+15. [src/plugins/_example_analyzer/](../../src/plugins/_example_analyzer/)（**新增**） — mock 分析器范本
+16. [src/audio/loader.py](../../src/audio/loader.py)（改） — `get_video_title` + `progress_hook` + http_headers
+17. [tests/unit/test_http_server.py](../../tests/unit/test_http_server.py)（**新增**） — 34 个测试
+18. [tests/unit/test_example_plugins.py](../../tests/unit/test_example_plugins.py)（**新增**） — 9 个测试
+19. [tests/unit/test_kernel_orchestration.py](../../tests/unit/test_kernel_orchestration.py)（**新增**） — 8 个测试
+20. [docs/HTTP_API.md](../../HTTP_API.md)（**新增**） — API 文档
+21. [docs/plugin_orchestration.md](../../plugin_orchestration.md)（**新增**） — Plugin 编排说明
 
 **依赖项：** `fastapi`, `uvicorn[standard]`, `python-multipart`, `httpx`（仅测试）
 
@@ -554,3 +564,52 @@ pytest tests/unit/test_http_server.py -v -k "not _real_stream_smoke"
 > 1. 补 CSS（UI 团队）
 > 2. 接 yt-dlp URL 下载（任何时候）
 > 3. 接真 plugins（按 mock 替换点）
+
+---
+
+## 附录：第二轮改动（2026-07-12 晚）
+
+> 本轮基于 `docs/workshop_user_flow.md` 对照，修复 UI 与文档之间的差距。
+
+### A.1 改动清单
+
+| 改动 | 文件 | 说明 |
+|------|------|------|
+| 3 Steps → 4 Tabs | index.html + app.js | Tab1 音频输入 / Tab2 音轨分离 / Tab3 音轨分析 / Tab4 播放导出 |
+| 下载后不自动跳转 | app.js | `handleUrlFetch` / `handleFileUpload` 完成后显示 `btn-continue-tab2`，用户手动点 |
+| 下载进度条 | analysis.py + app.js + index.html | yt-dlp `progress_hook` → SSE `url_download_progress` → `<progress>` 元素 |
+| 视频标题命名 | loader.py + analysis.py + app.js | `get_video_title(url)` → `sanitize_title()` → `ws.rename()` → 侧边栏刷新 |
+| 模型下拉 | index.html + app.js + api.js + style.css | `<select id="sel-separator">` 从 `/api/plugins/separators` 自动填充 |
+| LastTab 恢复 | app.js | `loadActiveWorkshopData` 读 `s.LastTab` 决定进入哪个 Tab |
+| bindNavigation 修复 | app.js | 之前缺失导致所有按钮不工作，已定义 |
+| YT 下载修复 | loader.py | 去掉 ffmpeg post-process 避免循环重试 + 加 `http_headers` |
+| B站 xfail | test_audio_loader.py | B站 412 是 yt-dlp 上游问题，标 `xfail` |
+| CSS 补充 | style.css | welcome-panel / btn-danger / toast / workspace-close / sep-model-row / dl-progress |
+
+### A.2 新增测试
+
+| 测试类 | 测试数 | 验证点 |
+|--------|--------|--------|
+| `TestPluginEndpoints` | 2 | `/api/plugins/separators` + `/api/plugins/analyzers` |
+| `TestLastTabPersistence` | 2 | 新建 Tab1 + 关闭后保留 |
+| `TestUploadByUrlErrors` | 3 | 空 URL / 错协议 / 错 wid |
+
+### A.3 总测试数
+
+```
+182 passed (unit) + 2 xfailed (B站网络) = 184 total
+ruff: clean
+```
+
+### A.4 本轮发现的 bug
+
+| bug | 根因 | 修复 |
+|-----|------|------|
+| `bindNavigation is not defined` | `DOMContentLoaded` handler 调用了未定义的函数 → 所有按钮事件不绑 | 定义 `bindNavigation()` |
+| `LastTab` 被忽略 | `loadActiveWorkshopData` 只根据数据推导 Tab，不读 `LastTab` 字段 | 读 `s.LastTab` 映射到 1-4 |
+| Tab2 模型下拉全空 | 旧 HTML 只有 `<button id="btn-model">` 没有 `<select>` | 改 `<select>` + JS 自动填充 |
+| YouTube 下载无限循环 | `download_audio_from_url` 走 ffmpeg 后处理，ffmpeg 缺失导致 yt-dlp 重试 | 去掉 postprocessors，直接下原始格式 |
+| B站 HTTP 412 | yt-dlp 上游对 B 站新反爬未适配 | 标 xfail + 友好错误提示 |
+| reload worker app=None | `python -m src.ui --reload` 时 worker 进程重新 import `src.ui.server` → `app = None` | 用 `__getattr__` + `_app_instance` 缓存 |
+| 旧 workspace.py 引用 | `api/workshops.py` 用已废弃的 `WorkspaceManager` | 改 `request.app.state.kernel` |
+| 新建车间后 mainPanels 不显示 | `renderWelcomePanel` 只在 refreshList 时调，handleSwitchWorkshop 后没调 | 在 switch + close 后显式调 `renderWelcomePanel()` |

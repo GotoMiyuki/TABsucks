@@ -355,3 +355,73 @@ class TestStaticFiles:
         r = client.get("/static/js/app.js")
         assert r.status_code == 200
         assert "app.js" in r.text or "TABsucks" in r.text
+
+
+class TestPluginEndpoints:
+    def test_list_separators(self, kernel_and_client) -> None:
+        kernel, client = kernel_and_client
+        r = client.get("/api/plugins/separators")
+        assert r.status_code == 200
+        body = r.json()
+        assert isinstance(body, list)
+        assert any(p["name"] == "example_separator" for p in body)
+
+    def test_list_analyzers(self, kernel_and_client) -> None:
+        kernel, client = kernel_and_client
+        r = client.get("/api/plugins/analyzers")
+        assert r.status_code == 200
+        body = r.json()
+        assert isinstance(body, list)
+        assert any(p["name"] == "example_analyzer" for p in body)
+
+
+class TestLastTabPersistence:
+    def test_new_workshop_has_tab1(self, kernel_and_client) -> None:
+        """新建车间 LastTab 应为 Tab1。"""
+        kernel, client = kernel_and_client
+        wid = kernel.create_workshop("Fresh")["id"]
+        state = client.get(f"/api/workshops/{wid}").json()
+        assert state["LastTab"] == "Tab1"
+
+    def test_last_tab_persists_after_close(self, kernel_and_client) -> None:
+        """关闭后 LastTab 被保留。"""
+        kernel, client = kernel_and_client
+        wid = kernel.create_workshop("Persistent")["id"]
+        # 模拟 Tab3 激活后再关闭
+        ws = kernel.manager.get(wid)
+        ws.set_last_tab("Tab3")
+        ws.save()
+        client.post(f"/api/workshops/{wid}/close")
+        # 重新激活后 LastTab 仍在
+        client.post(f"/api/workshops/{wid}/switch")
+        state = client.get(f"/api/workshops/{wid}").json()
+        assert state["LastTab"] == "Tab3"
+
+
+class TestUploadByUrlErrors:
+    def test_empty_url_400(self, kernel_and_client) -> None:
+        kernel, client = kernel_and_client
+        wid = kernel.create_workshop("ErrTest")["id"]
+        r = client.post(
+            f"/api/workshops/{wid}/upload-by-url", json={"url": ""}
+        )
+        assert r.status_code == 400
+        assert "URL 不能为空" in str(r.json())
+
+    def test_non_http_url_400(self, kernel_and_client) -> None:
+        kernel, client = kernel_and_client
+        wid = kernel.create_workshop("ErrTest2")["id"]
+        r = client.post(
+            f"/api/workshops/{wid}/upload-by-url",
+            json={"url": "ftp://evil"},
+        )
+        assert r.status_code == 400
+        assert "http(s)://" in str(r.json())
+
+    def test_missing_wid_404(self, kernel_and_client) -> None:
+        _, client = kernel_and_client
+        r = client.post(
+            "/api/workshops/nonexistent/upload-by-url",
+            json={"url": "http://x.com/x.mp3"},
+        )
+        assert r.status_code == 404

@@ -18,13 +18,13 @@ import os
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
 import librosa
 import numpy as np
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    pass
 
 
 # ---------------------------------------------------------------------------
@@ -303,6 +303,8 @@ def download_audio_from_url(
     output_path: str | Path | None = None,
     format: str = "mp3",
     progress: bool = False,
+    *,
+    progress_hook: Any = None,
 ) -> Path:
     """从网络链接下载音频（YouTube/Bilibili）。
 
@@ -344,19 +346,20 @@ def download_audio_from_url(
 
     # yt-dlp 配置
     ydl_opts: dict = {
-        "format": "bestaudio/best",  # 选择最佳音频流
-        "outtmpl": str(output_path.with_suffix("")),  # 输出模板（不含扩展名）
-        "quiet": not progress,  # 静默模式控制
+        "format": "bestaudio/best",
+        "outtmpl": str(output_path.with_suffix(".%(ext)s")),
+        "quiet": not progress,
+        # B站 412 修复：模拟浏览器请求头
+        "http_headers": {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+            "Referer": "https://www.bilibili.com/",
+        },
+        # 不转码：直接下原始音频流（避免 ffmpeg 缺失导致无限重试）
+        "postprocessors": [],
     }
-
-    # 非 webm 格式需要 FFmpegExtractAudio 后处理器进行转码
-    if format != "webm":
-        ydl_opts["postprocessors"] = [
-            {
-                "key": "FFmpegExtractAudio",
-                "preferredcodec": format,
-            }
-        ]
+    # 进度回调（供 UI 端显示进度条）
+    if progress_hook is not None:
+        ydl_opts["progress_hooks"] = [progress_hook]
 
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -364,12 +367,36 @@ def download_audio_from_url(
     except Exception as e:
         raise AudioLoaderError(f"下载失败: {e}") from e
 
-    # yt-dlp 实际输出的文件扩展名可能与 format 不完全一致，
-    # 这里用 format 拼接扩展名来定位输出文件
-    actual_path = output_path.with_suffix(f".{format}")
-    if not actual_path.exists():
-        raise AudioLoaderError(f"音频文件未生成: {actual_path}")
-    return actual_path
+    # 用 glob 找生成的文件（格式不确定时比 with_suffix 更鲁棒）
+    candidates = list(output_path.parent.glob(output_path.stem + ".*"))
+    if not candidates:
+        raise AudioLoaderError(f"音频文件未生成: {output_path.parent}")
+    return candidates[0]
+
+
+def get_video_title(url: str) -> str | None:
+    """从 YouTube/Bilibili 获取视频标题（不下载音频）。
+
+    用于在下载前获取标题，以便自动命名车间。
+
+    Returns:
+        视频标题；失败返回 None。
+    """
+    import yt_dlp
+
+    _ensure_ffmpeg()
+    ydl_opts: dict = {
+        "quiet": True,
+        "http_headers": {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        },
+    }
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+            return str(info.get("title", "")) if info else None
+    except Exception:
+        return None
 
 
 def load_audio_from_url(url: str, sr: int = 44100) -> AudioData:
@@ -405,8 +432,9 @@ def load_audio_from_url(url: str, sr: int = 44100) -> AudioData:
         >>> print(audio.duration)
         245.3
     """
-    import yt_dlp
     import tempfile
+
+    import yt_dlp
 
     _ensure_ffmpeg()
 

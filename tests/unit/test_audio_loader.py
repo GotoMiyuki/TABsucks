@@ -140,8 +140,7 @@ class TestLoadAudio:
 
     def test_load_audio_sine_wave(self, tmp_path: Path) -> None:
         """使用合成正弦波音频测试 load_audio 正确加载。"""
-        import tempfile
-        from src.audio.loader import AudioData, save_audio, load_audio
+        from src.audio.loader import AudioData, load_audio, save_audio
 
         sample_rate = 22050
         duration = 1.0
@@ -195,6 +194,11 @@ class TestDownloadAudioFromUrl:
             download_audio_from_url("https://invalid.url/video", tmp_path)
 
     @pytest.mark.network
+    @pytest.mark.xfail(
+        reason="B站近期启用 WBI 签名反爬，yt-dlp 上游尚未适配（HTTP 412）",
+        raises=AudioLoaderError,
+        strict=True,
+    )
     def test_download_audio_from_url_bilibili(self, tmp_path: Path) -> None:
         """Bilibili 视频应能成功下载。"""
         path = download_audio_from_url(
@@ -219,6 +223,11 @@ class TestLoadAudioFromUrl:
     """load_audio_from_url 函数测试（需要网络）。"""
 
     @pytest.mark.network
+    @pytest.mark.xfail(
+        reason="B站近期启用 WBI 签名反爬，yt-dlp 上游尚未适配（HTTP 412）",
+        raises=AudioLoaderError,
+        strict=True,
+    )
     def test_load_audio_from_url_bilibili(self) -> None:
         """Bilibili 链接应返回 AudioData。"""
         audio = load_audio_from_url("https://www.bilibili.com/video/BV1Ye4y1f7kA")
