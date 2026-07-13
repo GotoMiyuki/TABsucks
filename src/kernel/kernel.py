@@ -350,7 +350,10 @@ class Kernel:
         else:
             self._load_workshop_raw_audio_into_rc(wid, sample_rate=sample_rate)
 
-        ws.start_separation(plugin_name)
+        ws.start_separation(
+            plugin_name,
+            model_path=self._get_separator_model_path(plugin_name),
+        )
         inner_task = orch.start_separation(
             wid,
             self.bus,
@@ -386,6 +389,16 @@ class Kernel:
         orch.rc.set_buffer("raw", audio.samples)
         orch.rc.set_metadata("sample_rate", int(audio.sample_rate))
         orch.rc.set_metadata("raw_audio_path", str(raw_path))
+
+    def _get_separator_model_path(self, plugin_name: str) -> str | None:
+        """Return the manifest directory for a separator plugin when available."""
+        orch = self._require_orchestrator()
+        resolved_name = orch._resolve_separator_name(plugin_name)
+        manifest = orch.pm.get_manifest(resolved_name)
+        if manifest is None:
+            return None
+        manifest_dir = manifest.get("_manifest_dir")
+        return str(manifest_dir) if manifest_dir else None
 
     @staticmethod
     def _recover_workshop_raw_audio_path(ws) -> Path | None:

@@ -8,7 +8,7 @@
     "Tab2": {
       "SeparationState": "done",
       "SeparationModelName": "separation_bs_roformer",
-      "SeparationModelPath": null,
+      "SeparationModelPath": "E:\\raungong\\tb\\TABsucks\\src\\plugins\\separation\\model_1",
       "TrackAudioFilePath": {
         "vocals": "track_audio\\track_vocals\\separation_bs_roformer_vocals.wav",
         "drums": "track_audio\\track_drums\\separation_bs_roformer_drums.wav",

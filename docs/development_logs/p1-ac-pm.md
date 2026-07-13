@@ -1474,3 +1474,89 @@ multi-channel raw load ok (2, 128) 48000
 - `Kernel._load_workshop_raw_audio_into_rc()` 已走 `load_audio_multi_channel()`；
 - RC 中 `raw` buffer 保持 `(channels, samples)`；
 - `sample_rate` 使用 loader 返回的真实采样率 `48000`。
+
+---
+
+## 十七、2026-07-13 追加：Tab2 SeparationModelPath 写入 manifest 模型目录
+
+### 现象
+
+用户检查 `cache/workshop_<id>/state.json` 时发现：
+
+```json
+"SeparationModelName": "separation_bs_roformer",
+"SeparationModelPath": null
+```
+
+但期望 `SeparationModelPath` 写入真实分离插件目录：
+
+```text
+E:\raungong\tb\TABsucks\src\plugins\separation\model_1
+```
+
+### 根因
+
+`MusicWorkshop.start_separation()` 本身支持第二个参数：
+
+```python
+start_separation(model_name, model_path=None)
+```
+
+并会把 `model_path` 写入：
+
+```json
+TabState.Tab2.SeparationModelPath
+```
+
+但 `Kernel.start_separation_task()` 之前只调用：
+
+```python
+ws.start_separation(plugin_name)
+```
+
+没有把 manifest 发现阶段记录的 `_manifest_dir` 传进去，所以 state 中自然保持 `null`。
+
+### 修复
+
+在 `src/kernel/kernel.py` 中新增：
+
+```python
+Kernel._get_separator_model_path(plugin_name)
+```
+
+行为：
+
+1. 通过 Orchestrator 解析 UI / legacy alias 到真实插件名；
+2. 从 `PluginManager.get_manifest(resolved_name)` 获取 manifest；
+3. 读取 manifest 内部记录的 `_manifest_dir`；
+4. 传给 `ws.start_separation(plugin_name, model_path=...)`。
+
+现在真实 manifest 插件 `separation_bs_roformer` 会写入：
+
+```text
+E:\raungong\tb\TABsucks\src\plugins\separation\model_1
+```
+
+对于没有 manifest 目录的 fallback 插件（如 `example_separator`），`SeparationModelPath` 仍保持 `null`，这是合理行为。
+
+### 验证
+
+通过：
+
+```powershell
+& D:\anaconda\envs\pyq\python.exe -m py_compile `
+  src\kernel\kernel.py `
+  tests\unit\test_kernel.py
+```
+
+新增单测：
+
+```python
+TestKernel.test_start_separation_records_manifest_model_path
+```
+
+手动验证输出：
+
+```text
+E:\raungong\tb\TABsucks\src\plugins\separation\model_1
+```

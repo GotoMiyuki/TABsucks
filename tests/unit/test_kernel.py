@@ -298,6 +298,41 @@ class TestKernel:
         np.testing.assert_array_equal(orch.rc.get_buffer("raw"), stereo)
         assert orch.rc.get_metadata("sample_rate") == 48000
 
+    def test_start_separation_records_manifest_model_path(
+        self,
+        kernel_in_tmp: Kernel,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        info = kernel_in_tmp.create_workshop("Model Path")
+        wid = info["id"]
+
+        async def runner():
+            orch = kernel_in_tmp._require_orchestrator()
+
+            async def fake_inner_task():
+                return {"status": "failed", "error": "stop before plugin import"}
+
+            def fake_start_separation(*args, **kwargs):
+                return asyncio.create_task(fake_inner_task())
+
+            monkeypatch.setattr(orch, "start_separation", fake_start_separation)
+            await kernel_in_tmp.start_separation_task(
+                wid,
+                plugin_name="separation_bs_roformer",
+                audio_samples=np.zeros(128, dtype=np.float32),
+                sample_rate=44100,
+                durations_sec=0.0,
+            )
+
+        asyncio.run(runner())
+
+        state = kernel_in_tmp.get_state(wid)
+        assert state is not None
+        model_path = state["TabState"]["Tab2"]["SeparationModelPath"]
+        assert model_path is not None
+        assert Path(model_path).name == "model_1"
+        assert Path(model_path).is_dir()
+
     def test_require_manager_before_boot_raises(self, tmp_path: Path) -> None:
         k = Kernel(cache_root=tmp_path, autosave=False)
         with pytest.raises(RuntimeError, match="未启动"):
