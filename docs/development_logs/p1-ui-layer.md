@@ -207,7 +207,8 @@ MVP 阶段使用全局单例 `bus`，路由模块和模拟任务直接 `from src
 ## 八、启动方式
 
 ```bash
-cd C:\Users\99662\desktop\tabsucks
+cd ..\tabsucks
+# 输入 TABsucks 在文件夹中的位置
 py -m uvicorn src.ui.server:app --port 8000
 # 浏览器访问 http://localhost:8000
 ```
