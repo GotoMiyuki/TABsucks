@@ -587,3 +587,890 @@ print(rc.vram_status)
 2. **显存预算系统**：当前一个 requester 可以重复申请（累加配额），后续可改为预算上限 + 申请/释放配对的严格模式
 3. **多 GPU 支持**：`get_gpu_info()` 和 `allocate_vram()` 当前仅探测 GPU 0，多卡场景需扩展
 4. **监控指标导出**：`vram_status` 可对接 UI 的状态栏，实时显示显存占用
+
+---
+
+# 2026-07-13 追加日志：合并 `_s` 分支实现并接通 Orchestrator / AnalysisEngine / Tab2
+
+## 一、架构选择
+
+本次在两个方案之间选择了 **方案 1**：
+
+1. 将 `plugin_manager_s.py`、`resource_controller_s.py` 的真实能力合并回非 `_s` 版本；
+2. `_s` 文件只保留兼容 wrapper，避免旧 import 立即失效；
+3. 以合并后的 `PluginManager` / `ResourceController` 作为唯一 canonical 实现；
+4. 再基于 canonical PM/RC 完善 `Orchestrator`、`AnalysisEngine` 和 Tab2 的真实执行链路。
+
+选择理由：
+
+- `_s` 继续独立存在会让 PM/RC 双轨演化，后续 `Orchestrator` 和 `AnalysisEngine` 需要不断判断该依赖哪一套接口。
+- 合并后，manifest 扫描、动态实例化、硬件兼容检查、VRAM 预算、buffer/metadata 管理都集中在主实现中。
+- `_s` wrapper 可以保护当前分支已有调用方式，迁移成本低。
+
+## 二、本次修改文件
+
+| 文件 | 本次状态 | 说明 |
+|---|---|---|
+| `src/kernel/core/resource_controller.py` | 重写/增强 | 成为 canonical ResourceController，包含线程锁、批量 buffer API、GPU 探针、VRAM allocate/release/status。 |
+| `src/kernel/core/resource_controller_s.py` | 改为兼容 wrapper | `ResourceController_s(ResourceController)`，旧 import 仍可用。 |
+| `src/kernel/core/plugin_manager.py` | 重写/增强 | 成为 canonical PluginManager，保留 register/get/list/execute，并加入 manifest discovery、`ensure_plugin()`、`check_compatibility()`、`prepare_vram()`。 |
+| `src/kernel/core/plugin_manager_s.py` | 改为兼容 wrapper | `SeparationPluginManager(PluginManager)`，`SeparationPluginManagerError = PluginManagerError`。 |
+| `src/kernel/core/kernel_orchestrator.py` | 完善 | 注册 example 插件，列出 manifest 分离插件，惰性实例化真实插件，执行前准备 VRAM，执行后释放 VRAM。 |
+| `src/kernel/core/analysis_engine.py` | 完善 | `_run_separation()` 优先走 `PluginManager.ensure_plugin("separation_bs_roformer")`，失败时回退旧 `Separator`。 |
+| `src/kernel/kernel.py` | 完善 Tab2 桥接 | `start_separation_task()` 现在会把 workshop raw audio 加载到 RC；分离完成后把 RC stem buffers 保存为 wav，并写回 Tab2 state。 |
+| `tests/unit/test_kernel.py` | 增加测试 | 覆盖 `Kernel.start_separation_task()` 分离后写回 Tab2 tracks 的行为。 |
+
+## 三、PluginManager 合并结果
+
+`src/kernel/core/plugin_manager.py` 现在承担原 `SeparationPluginManager` 的职责：
+
+- 扫描 `src/plugins/separation/model_*/manifest.json`
+- 暴露 `get_available_plugins(phase="separation")`
+- 读取 `get_manifest(name)`
+- 通过 manifest 的 `entrypoint` + `class` 做 `instantiate_plugin(name, config=None)`
+- `ensure_plugin(name)`：已注册则返回实例；未注册但有 manifest 则惰性实例化
+- `check_compatibility(name)`：检查 GPU 信息、RAM、Python package
+- `prepare_vram(name)`：委托 `ResourceController.allocate_vram()`
+
+为了避免启动时卡住，真实 BS-RoFormer 插件不会在 `PluginManager` 初始化时 import；只有用户实际执行 `separation_bs_roformer` 时才会 import entrypoint 并初始化插件实例。
+
+保留的兼容写法：
+
+```python
+from src.kernel.core.plugin_manager_s import SeparationPluginManager
+
+pm = SeparationPluginManager(rc)
+```
+
+内部实际等价于：
+
+```python
+from src.kernel.core.plugin_manager import PluginManager
+
+pm = PluginManager(rc)
+```
+
+## 四、ResourceController 合并结果
+
+`src/kernel/core/resource_controller.py` 现在承担原 `ResourceController_s` 的职责：
+
+- `threading.RLock()` 保护 buffer、metadata、model cache、VRAM allocation 状态
+- `set_buffers_batch()` / `get_buffers_batch()` 支持批量读写
+- `get_gpu_info()` 返回 CUDA 可用性、显存空闲量、总量、设备名等
+- `allocate_vram(requester, amount_mb, auto_release=True)` 做 advisory 预算申请
+- `release_vram(requester)` / `release_all_vram()` 释放预算
+- `vram_status` 暴露当前显存预算状态
+
+保留的兼容写法：
+
+```python
+from src.kernel.core.resource_controller_s import ResourceController_s
+
+rc = ResourceController_s()
+```
+
+内部实际继承 canonical `ResourceController`。
+
+## 五、Orchestrator 接入结果
+
+`Orchestrator` 当前职责：
+
+- 初始化共享 `ResourceController` 和 `PluginManager`
+- 注册 `example_separator` / `example_analyzer`，保留 MVP fallback
+- `list_separator_plugins()` 返回 manifest-backed 分离插件 + example fallback
+- 支持旧 UI label alias：`BS-RoFormer`、`BS-RoFormer-SW`、`BS-Roformer-SW`、`BS-Roformer-SW.ckpt`、`BS-Roformer-SW.yaml`
+- 对 manifest 插件执行：`pm.ensure_plugin()` → `pm.prepare_vram()` → `call_plugin_execute_async()` → `rc.release_vram()` in `finally`
+
+当前 `Orchestrator().list_separator_plugins()` 手动验证返回：
+
+```text
+['separation_bs_roformer', 'example_separator']
+```
+
+## 六、AnalysisEngine 接入结果
+
+`AnalysisEngine._run_separation()` 已从硬编码旧 `Separator` 转为优先使用 canonical PM：
+
+```python
+plugin_name = "separation_bs_roformer"
+plugin = self._pm.ensure_plugin(plugin_name)
+```
+
+执行路径：
+
+1. 如果 manifest 插件可用：准备 VRAM → `pm.execute("separation_bs_roformer")` → 写入 `separation_plugin_result` metadata → 释放 VRAM。
+2. 如果插件不可用：回退到旧 `src.plugins.separation.separator.Separator`，保持现有测试和无重依赖环境可运行。
+
+这样 `AnalysisEngine` 不再把分离实现固定到单个类，而是通过 PM 调度插件。
+
+## 七、Tab2 / Kernel 桥接补齐
+
+本次发现并修复了一个 Tab2 集成缺口：
+
+> 上传接口只把 raw audio 写入 workshop cache/state，但启动分离时没有把该文件解码进 `ResourceController.raw`。
+
+`Kernel.start_separation_task()` 现在补齐完整链路：
+
+1. 校验 workshop 存在；
+2. 如果调用方传入 `audio_samples`，直接写入 `orch.rc["raw"]`；
+3. 如果没有传入 `audio_samples`，从 `ws.get_raw_audio_path()` 读取 workshop 中已上传的音频；
+4. 调用 `src.audio.loader.load_audio()` 解码并写入 RC；
+5. 调 `ws.start_separation(plugin_name)` 标记 Tab2 running；
+6. 启动 `Orchestrator.start_separation()`；
+7. 任务完成后，从 RC 读取 stems；
+8. 将 stems 保存为 `track_audio/track_<stem>/<plugin>_<stem>.wav`；
+9. 调 `ws.complete_separation(track_files)` 写回 Tab2 state；
+10. 如果失败，调 `ws.fail_separation(error)`。
+
+同时补了 stem 保存前的形状归一化：
+
+- 项目 `AudioData/save_audio()` 约定多声道是 `(channels, samples)`
+- 真实 `soundfile.read()` 常见输出是 `(samples, channels)`
+- 保存前会把明显的 `(samples, channels)` 转成 `(channels, samples)`，避免真实插件输出 wav 维度错乱
+
+## 八、测试与验证
+
+使用解释器：
+
+```powershell
+D:\anaconda\envs\pyq\python.exe
+```
+
+通过：
+
+```powershell
+& D:\anaconda\envs\pyq\python.exe -m py_compile `
+  src\kernel\kernel.py `
+  src\kernel\core\resource_controller.py `
+  src\kernel\core\plugin_manager.py `
+  src\kernel\core\resource_controller_s.py `
+  src\kernel\core\plugin_manager_s.py `
+  src\kernel\core\kernel_orchestrator.py `
+  src\kernel\core\analysis_engine.py `
+  tests\unit\test_kernel.py
+```
+
+通过：
+
+```powershell
+& D:\anaconda\envs\pyq\python.exe -m pytest `
+  tests/unit/test_resource_controller.py `
+  tests/unit/test_plugin_manager.py `
+  tests/unit/test_kernel_orchestration.py `
+  tests/unit/test_analysis_engine.py `
+  -q
+```
+
+结果：
+
+```text
+48 passed
+```
+
+手动验证 Tab2 写回链路：
+
+```text
+done
+['bass', 'drums', 'guitar', 'other', 'piano', 'vocals']
+True
+```
+
+含义：
+
+- workshop Tab2 状态为 `done`
+- 6 个 stem 名称已写入 `TrackAudioFilePath`
+- 对应 wav 文件真实存在
+
+## 九、当前环境限制
+
+- `tests/unit/test_http_server.py` 当前环境缺少 `fastapi`，无法收集。
+- pytest 使用 `tmp_path` / `--basetemp` 时，Windows 当前环境对临时目录返回 `PermissionError: [WinError 5] 拒绝访问`。
+- 本次尝试创建的 `.pytest_tmp` 目录因权限问题无法删除，属于测试环境残留，不是业务代码产物。
+- pytest cache 写入 `.pytest_cache` 也有权限 warning，不影响上述 48 个核心测试通过。
+
+## 十、后续建议
+
+1. 继续完成 Tab2 前端 stem grid 渲染：后端已经会写回 `TrackAudioFilePath`，UI 需要在 `separation_done` 后刷新并展示 6 轨。
+2. 为 manifest 插件补更细的单测：mock import 一个轻量 manifest 插件，覆盖 `ensure_plugin()` / `prepare_vram()` / `execute()`。
+3. 决定 UI 默认选项顺序：当前分离插件列表是 `separation_bs_roformer` 在前，`example_separator` fallback 在后。
+4. 后续如果环境补齐 `fastapi`，再跑 HTTP API 测试，重点看 `/api/plugins/separators` 和 `/api/workshops/{wid}/separate`。
+
+---
+
+## 十一、2026-07-13 追加：Tab1 -> Tab2 raw audio 丢失问题的临时 debug 探针
+
+### 现象
+
+真实 UI 流程：
+
+```powershell
+python -m src.ui
+```
+
+操作：
+
+1. Tab1 正常选歌并上传；
+2. 进入 Tab2；
+3. 选择分离模型；
+4. 点击开始分离；
+5. 后端报错：
+
+```text
+RuntimeError: Workshop <wid> has no raw audio
+```
+
+已观察到一个矛盾点：
+
+- 磁盘 `cache/workshop_<wid>/state.json` 中存在 `TabState.Tab1.RawAudioFilePath`
+- 对应 `raw_audio/<filename>` 文件也存在
+- 但运行时 `Kernel._load_workshop_raw_audio_into_rc()` 中 `ws.get_raw_audio_path()` 返回 `None`
+
+因此当前优先怀疑：
+
+1. upload 和 separate 请求可能命中了不同的 Kernel/app 实例；
+2. 运行时内存中的 `MusicWorkshop.state` 与磁盘 `state.json` 脱节；
+3. 前端传给 `/separate` 的 `wid` 不是刚刚上传音频的那个 workshop；
+4. `Kernel.start_separation_task()` 过度信任内存 state，缺少从磁盘 state fallback 的兜底。
+
+### 本次临时改动
+
+为了避免再次用长链路脚本卡住，本次只加入轻量状态日志，不执行额外分离脚本。
+
+统一前缀：
+
+```text
+[DEBUG-TAB2RAW]
+```
+
+新增探针位置：
+
+| 文件 | 位置 | label | 目的 |
+|---|---|---|---|
+| `src/ui/api/analysis.py` | 文件上传成功后 | `after-upload-file` | 确认 upload 后内存 raw、磁盘 raw、绝对路径是否存在。 |
+| `src/ui/api/analysis.py` | URL 上传成功后 | `after-upload-url` | 同上，覆盖 URL 路径。 |
+| `src/ui/api/analysis.py` | `/workshops/{wid}/separate` 入口 | `before-separate` | 确认 Tab2 请求传入的 wid 对应的 raw 状态。 |
+| `src/kernel/kernel.py` | `raw_path is None` 抛错前 | `kernel-raw-missing` | 当 Kernel 内部判定 raw 缺失时，打印内存 state 与磁盘 state 的差异。 |
+
+每条日志包含：
+
+- `wid`
+- `active_id`
+- `kernel_id`
+- `manager_id`
+- `ws_id`
+- `memory_raw`
+- `disk_raw`
+- `abs_raw`
+- `abs_exists`
+- `disk_error`
+
+### 判断方式
+
+如果 `after-upload-file.memory_raw` 有值，但 `before-separate.memory_raw` 为空：
+
+- 说明同一个 wid 的运行时内存 state 在两次请求之间丢失或切换了对象。
+
+如果 `kernel_id` / `manager_id` 在 upload 和 separate 之间不同：
+
+- 说明请求命中了不同 Kernel/app 实例，需要检查 uvicorn reload、旧进程残留、端口上的服务是否唯一。
+
+如果 `before-separate.memory_raw` 为空但 `disk_raw` 有值：
+
+- 说明磁盘 state 是可信的，正式修复应在 `Kernel._load_workshop_raw_audio_into_rc()` 中加入 disk-state fallback。
+
+如果 `before-separate.wid` 不是刚刚 upload 的 wid：
+
+- 说明前端当前 workshop 状态或 Tab 切换逻辑有问题，需检查 `state.currentWid` 和 sidebar active 状态。
+
+### 使用方法
+
+1. 重启 UI 服务，确保修改生效：
+
+```powershell
+D:\anaconda\envs\pyq\python.exe -m src.ui
+```
+
+2. 在浏览器中重复：
+
+```text
+Tab1 上传音频 -> 进入 Tab2 -> 选择模型 -> 开始分离
+```
+
+3. 在终端中查找：
+
+```text
+[DEBUG-TAB2RAW]
+```
+
+4. 根据 `after-upload-*`、`before-separate`、`kernel-raw-missing` 三类日志判断根因。
+
+### 清理要求
+
+这是临时 debug instrumentation。确认根因并修复后，必须删除所有：
+
+```text
+[DEBUG-TAB2RAW]
+```
+
+相关代码。
+
+---
+
+## 十二、2026-07-13 追加：raw audio debug 结论与正式兜底修复
+
+### 用户实测日志
+
+用户按真实 UI 流程重启服务并复现后，终端输出：
+
+```text
+[DEBUG-TAB2RAW] before-separate {
+  'wid': '614ef0804fe543e9',
+  'active_id': '614ef0804fe543e9',
+  'kernel_id': 3219369338736,
+  'manager_id': 3219369344880,
+  'ws_id': 3219369342480,
+  'memory_raw': 'raw_audio\\梦的光点-王心凌.mp3',
+  'disk_raw': 'raw_audio\\梦的光点-王心凌.mp3',
+  'disk_error': None,
+  'abs_raw': 'E:\\raungong\\tb\\TABsucks\\cache\\workshop_614ef0804fe543e9\\raw_audio\\梦的光点-王心凌.mp3',
+  'abs_exists': True
+}
+```
+
+### 结论
+
+这条日志说明：
+
+- Tab2 请求传入的 `wid` 是正确的；
+- 当前 active workshop 与请求 wid 一致；
+- API 层看到的 `memory_raw` 有值；
+- 磁盘 `state.json` 中的 `disk_raw` 也有值；
+- raw audio 绝对路径存在；
+- `kernel_id` / `manager_id` / `ws_id` 在该请求内正常。
+
+因此，最初那次 `Workshop <wid> has no raw audio` 更像是服务重启前的旧运行时内存状态，或浏览器/服务进程状态未同步造成的瞬时问题，而不是 Tab2 请求本身固定传错 wid。
+
+### 正式修复
+
+临时 debug instrumentation 已从源码中移除：
+
+- 删除 `src/ui/api/analysis.py::_debug_raw_state()`
+- 删除 `after-upload-file`
+- 删除 `after-upload-url`
+- 删除 `before-separate`
+- 删除 `src/kernel/kernel.py` 中的 `[DEBUG-TAB2RAW] kernel-raw-missing` 打印
+
+同时加入正式兜底：
+
+```python
+Kernel._recover_workshop_raw_audio_path(ws)
+```
+
+行为：
+
+1. `Kernel._load_workshop_raw_audio_into_rc()` 先走原路径：`ws.get_raw_audio_path()`；
+2. 如果内存 state 中 raw path 为空，则读取 `ws.cache.load_state()`；
+3. 从磁盘 state 的 `TabState.Tab1.RawAudioFilePath` 恢复相对路径；
+4. 使用 `ws.cache.to_absolute(rel_path)` 转为绝对路径；
+5. 检查文件真实存在；
+6. 将恢复出的 `rel_path` 同步回当前 `MusicWorkshop` 内存 state；
+7. 继续调用 `load_audio()` 解码并写入 RC。
+
+这样即使未来再出现“磁盘 state 有 raw path，但内存 state 丢了”的情况，Tab2 也可以自动恢复。
+
+### API 错误处理
+
+`POST /api/workshops/{wid}/separate` 现在会捕获启动阶段的同步异常：
+
+```python
+try:
+    kernel.start_separation_task(...)
+except Exception as e:
+    _err(400, f"启动分离失败: {e}")
+```
+
+这避免 raw 缺失、路径非法、音频解码失败等启动前错误直接打穿成 uvicorn traceback。
+
+### 验证
+
+通过：
+
+```powershell
+& D:\anaconda\envs\pyq\python.exe -m py_compile `
+  src\ui\api\analysis.py `
+  src\kernel\kernel.py `
+  tests\unit\test_kernel.py
+```
+
+手动验证 fallback：
+
+```text
+True
+raw_audio\song.mp3
+```
+
+含义：
+
+- 磁盘 state fallback 恢复出的路径与原 raw audio 文件一致；
+- 内存 `Tab1.RawAudioFilePath` 被恢复为 `raw_audio\song.mp3`。
+
+新增单测：
+
+```python
+TestKernel.test_recovers_raw_audio_path_from_disk_state
+```
+
+该测试只覆盖 state fallback，不触发 `load_audio()`、插件执行或分离任务，避免调试阶段的长链路卡顿。
+
+---
+
+## 十三、2026-07-13 追加：真实分离插件执行期间 UI 进度停在 0% 的修复
+
+### 现象
+
+用户在 UI 中点击 Tab2 分离后：
+
+- 后端不再报 raw audio 缺失；
+- 任务已经启动；
+- UI 进度环一直显示 `0%`。
+
+### 根因
+
+`example_separator` 会主动调用 `progress_callback`，所以 mock 分离能持续推进进度。
+
+但真实 `separation_bs_roformer` 插件当前是同步 `execute()`：
+
+- 模型加载发生在 `execute()` 内部；
+- 推理也发生在 `execute()` 内部；
+- 插件本身没有在加载/推理过程中调用 `progress_callback`；
+- 编排层原来只在执行前发 `0.0`，执行完成后发 `1.0`。
+
+因此真实插件运行期间，前端只能看到启动时的 `0%`，要等整个模型跑完后才会跳到 `100%`。如果模型加载或推理较久，就表现为 UI 卡在 0%。
+
+### 修复
+
+在 `src/kernel/core/kernel_orchestrator.py::call_plugin_execute_async()` 的同步插件路径中加入 heartbeat progress：
+
+1. 同步插件仍通过 `loop.run_in_executor(None, sync_run)` 放到线程池执行；
+2. 如果调用方传入 `progress_callback`，编排层会包装一个 `emit_progress()`；
+3. 插件自己调用进度时，仍优先使用插件进度；
+4. 如果插件长时间不调用进度，编排层每隔 `progress_interval_sec` 发一个小幅递增进度；
+5. heartbeat 上限为 `0.95`，避免任务未完成时显示 100%；
+6. 外层 `Orchestrator.start_separation()` 在任务成功结束后仍显式 `cb(1.0)`。
+
+默认心跳间隔从原先未使用的 `0.03s` 调整为 `0.5s`，避免真实长任务期间产生过多 SSE 事件。
+
+### 影响范围
+
+该修复只影响同步插件路径：
+
+- 对真实 `separation_bs_roformer` 有效；
+- 对未来不提供进度回调的同步插件也有效；
+- 对提供 `run_async()` 的异步插件不改变行为；
+- 对主动调用 `progress_callback` 的插件保留原进度，只做单调保护。
+
+### 测试
+
+新增测试：
+
+```python
+TestStartSeparation.test_sync_plugin_without_progress_gets_heartbeat
+```
+
+测试构造一个同步慢插件：
+
+- `execute()` 内部只 `time.sleep(0.16)`；
+- 不主动调用 `progress_callback`；
+- 断言 `call_plugin_execute_async()` 会产生至少一个 `0 < progress < 1` 的中间进度。
+
+验证命令：
+
+```powershell
+& D:\anaconda\envs\pyq\python.exe -m py_compile `
+  src\kernel\core\kernel_orchestrator.py `
+  tests\unit\test_kernel_orchestration.py
+```
+
+```powershell
+& D:\anaconda\envs\pyq\python.exe -m pytest `
+  tests/unit/test_kernel_orchestration.py::TestStartSeparation::test_sync_plugin_without_progress_gets_heartbeat `
+  -q
+```
+
+结果：
+
+```text
+1 passed
+```
+
+核心回归：
+
+```powershell
+& D:\anaconda\envs\pyq\python.exe -m pytest `
+  tests/unit/test_kernel_orchestration.py `
+  tests/unit/test_resource_controller.py `
+  tests/unit/test_plugin_manager.py `
+  tests/unit/test_analysis_engine.py `
+  -q
+```
+
+结果：
+
+```text
+49 passed
+```
+
+仍有环境 warning：
+
+```text
+PytestCacheWarning: could not create cache path ... .pytest_cache ... Access denied
+```
+
+该 warning 来自当前 Windows 权限环境，不影响测试通过。
+
+---
+
+## 十四、2026-07-13 追加：进度仍停在 0% 的二次定位与阶段进度修复
+
+### 现象
+
+第一次 heartbeat 修复后，用户反馈：
+
+> 现在还是显示的 0%，怀疑根本没有开始用模型推理分离。
+
+### 新判断
+
+这说明问题可能发生在 `call_plugin_execute_async()` 之前，而不是同步 `execute()` 内部。
+
+原 `Orchestrator.start_separation()` 的顺序是：
+
+1. emit `separation_started`
+2. `_ensure_plugin(resolved_plugin)`
+3. `prepare_vram()`
+4. `cb(0.0)`
+5. `call_plugin_execute_async(...)`
+6. `cb(1.0)`
+
+如果卡在第 2 步或第 3 步，例如：
+
+- import `src.plugins.separation.model_1.separator`
+- import `audio_separator`
+- 实例化真实插件
+- 依赖报错
+- VRAM 准备失败
+
+则前端不会收到任何 `separation_progress`，只会看到点击按钮时 UI 自己显示的 `0%`。
+
+另外，前端原来没有监听 `separation_failed`。如果后端已经发了失败事件，UI 仍会停在 0%，用户看不到失败原因。
+
+### 修复
+
+#### 1. 后端补阶段进度
+
+在 `src/kernel/core/kernel_orchestrator.py` 中新增：
+
+```python
+emit_progress_event(bus, wid, event_type, progress, **extra)
+```
+
+并在真实分离链路中增加阶段进度：
+
+| 阶段 | progress | stage |
+|---|---:|---|
+| 插件加载/实例化开始 | `0.01` | `loading_plugin` |
+| VRAM 准备开始 | `0.03` | `preparing_vram` |
+| 插件执行开始 | `0.05` | `running_plugin` |
+| 同步插件执行中 | `0.05` -> `0.95` | heartbeat |
+| 成功完成 | `1.0` | done |
+
+这样即使真实插件还没进入模型推理，UI 也会看到“任务已经进入加载/准备阶段”，不再停在点击按钮时的 0%。
+
+#### 2. 前端补失败事件
+
+在 `src/ui/static/js/app.js` 中增加：
+
+```javascript
+.on('separation_failed', p => onSeparationFailed(p))
+```
+
+并新增：
+
+```javascript
+function onSeparationFailed(payload = {}) {
+    const msg = payload.error || 'unknown error';
+    showToast(`分离失败: ${msg}`, 'error');
+    for (const suffix of ['', '-2']) {
+        const label = document.getElementById(`sep-ring-label${suffix}`);
+        if (label) label.textContent = 'failed';
+    }
+}
+```
+
+如果真实模型没有开始，是因为依赖、模型、VRAM、路径或运行时异常，用户现在会看到失败原因，而不是一直 0%。
+
+### 验证
+
+通过：
+
+```powershell
+& D:\anaconda\envs\pyq\python.exe -m py_compile `
+  src\kernel\core\kernel_orchestrator.py
+```
+
+通过：
+
+```powershell
+node --check src\ui\static\js\app.js
+```
+
+通过：
+
+```powershell
+& D:\anaconda\envs\pyq\python.exe -m pytest `
+  tests/unit/test_kernel_orchestration.py `
+  -q
+```
+
+结果：
+
+```text
+9 passed
+```
+
+### 用户侧注意
+
+由于修改了前端静态 JS，真实浏览器测试时需要：
+
+1. 重启后端服务；
+2. 浏览器强制刷新，避免使用旧 `app.js` 缓存。
+
+建议：
+
+```text
+Ctrl + F5
+```
+
+或打开 DevTools 后勾选 Disable cache 再刷新。
+---
+
+## 十五、2026-07-13 追加：分离插件入口导入失败的定位与兼容修复
+
+### 现象
+
+用户在真实 UI 中点击 Tab2 开始分离后，前端弹出：
+
+```text
+分离失败：无法导入插件 'separation_bs_roformer' 的入口模块
+'src.plugins.separation.model_1.separator': No module named
+'src.plugins.separation.separator'
+```
+
+这说明任务已经进入后端插件加载阶段，但在导入 manifest 指向的入口模块
+`src.plugins.separation.model_1.separator` 时，Python 先执行父包
+`src.plugins.separation.__init__`，而旧父包初始化逻辑仍试图导入已经不存在的
+`src.plugins.separation.separator`。
+
+### 根因
+
+分离插件迁移到 `src/plugins/separation/model_1/separator.py` 后，旧模块路径
+`src.plugins.separation.separator` 已经不再是有效入口。只要父包初始化、类型兼容层或废弃
+Workspace 代码仍引用旧路径，就可能在真实 UI 的插件加载链路里报：
+
+```text
+No module named 'src.plugins.separation.separator'
+```
+
+### 修复
+
+1. `src/plugins/separation/__init__.py` 改为轻量 lazy exports：
+   - 不再 eager import 旧 `src.plugins.separation.separator`；
+   - 仅在访问 `SeparationPlugin`、`SeparationResult`、`SeparatorError`、`TrackId` 时，从
+     `src.plugins.separation.model_1.separator` 延迟导入。
+2. `src/kernel/core/analysis_engine.py` 的旧 fallback import 改为
+   `src.plugins.separation.separator_old_type`。
+3. 继续清理废弃兼容文件 `src/kernel/core/workspace.py` 中的旧路径：
+   - `TYPE_CHECKING` 的 `SeparationResult` 改为从 `src.plugins.separation` 导入；
+   - `get_analysis_target_data()` 的 `TrackId` 改为从 `src.plugins.separation` 导入。
+4. 新增回归测试 `tests/unit/test_workspace_compat.py`，覆盖废弃 Workspace 读取
+   `_separation_result` 时不会再触发旧 separation 模块路径。
+
+### 验证
+
+使用解释器：
+
+```powershell
+D:\anaconda\envs\pyq\python.exe
+```
+
+直接导入 manifest 入口通过：
+
+```powershell
+& D:\anaconda\envs\pyq\python.exe -c "import importlib; m=importlib.import_module('src.plugins.separation.model_1.separator'); print(m.SeparationPlugin().name)"
+```
+
+结果：
+
+```text
+separation_bs_roformer
+```
+
+短回归通过：
+
+```powershell
+& D:\anaconda\envs\pyq\python.exe -m pytest `
+  tests/unit/test_workspace_compat.py `
+  tests/unit/test_plugin_manager.py::TestPluginManager::test_ensure_manifest_separator_imports_model_entrypoint `
+  -q
+```
+
+结果：
+
+```text
+2 passed
+```
+
+核心回归通过：
+
+```powershell
+& D:\anaconda\envs\pyq\python.exe -m pytest `
+  tests/unit/test_kernel_orchestration.py `
+  tests/unit/test_resource_controller.py `
+  tests/unit/test_plugin_manager.py `
+  tests/unit/test_analysis_engine.py `
+  tests/unit/test_workspace_compat.py `
+  -q
+```
+
+结果：
+
+```text
+51 passed
+```
+
+仍存在当前 Windows 环境的 pytest cache 权限 warning：
+
+```text
+PytestCacheWarning: could not create cache path ... .pytest_cache ... Access denied
+```
+
+该 warning 不影响上述业务回归结果。
+
+### 用户侧验证注意
+
+由于截图中的报错来自正在运行的 UI 服务，修复后需要重启服务进程，并让浏览器重新加载静态资源：
+
+```powershell
+D:\anaconda\envs\pyq\python.exe -m src.ui
+```
+
+浏览器建议 `Ctrl + F5` 强制刷新，避免继续使用旧 `app.js` 或旧后端进程状态。
+
+---
+
+## 十六、2026-07-13 追加：Tab2 raw audio 改为多声道加载
+
+### 背景
+
+用户指出当前 `Kernel._load_workshop_raw_audio_into_rc()` 使用：
+
+```python
+load_audio(raw_path, sr=sample_rate)
+```
+
+这会把原始音频混成单声道，并按传入 `sample_rate` 重采样。对 Tab2 音轨分离来说，真实分离插件更适合拿到原始多声道输入，避免在进入模型前丢失左右声道信息。
+
+### 链路检查
+
+沿 Tab2 到分离结束的链路检查结果：
+
+1. `load_audio_multi_channel()` 返回 `AudioData.samples` 形状为 `(channels, samples)`，并保留源文件原采样率。
+2. `separation_bs_roformer` 插件在 `execute()` 中已经按 `(channels, samples)` 处理 raw buffer；如果是一维才补成二维。
+3. 真插件 `_separate()` 写临时 wav 时使用 `audio.T`，正好转成 soundfile 需要的 `(samples, channels)`。
+4. `example_separator` 对二维 raw 使用 `raw.shape[1]` 作为样本数，不会因多声道输入崩。
+5. `Kernel._persist_separated_tracks()` 保存 stem 前已有 `_normalize_audio_samples_for_save()`，会把明显的 `(samples, channels)` 转成项目约定的 `(channels, samples)`。
+
+因此在 Tab2 分离到写回 `TrackAudioFilePath` 的范围内，没有发现会被该替换直接打断的 shape bug。
+
+### 修改
+
+`src/kernel/kernel.py` 中：
+
+```python
+from src.audio.loader import load_audio_multi_channel
+
+audio = load_audio_multi_channel(raw_path)
+```
+
+替换原先：
+
+```python
+from src.audio.loader import load_audio
+
+audio = load_audio(raw_path, sr=sample_rate)
+```
+
+行为变化：
+
+- 不再强制转单声道；
+- 不再强制重采样到默认 `22050`；
+- `ResourceController["raw"]` 保存原始声道布局；
+- `ResourceController.metadata["sample_rate"]` 保存源文件实际采样率。
+
+### 回归测试
+
+新增测试：
+
+```python
+TestKernel.test_load_workshop_raw_audio_uses_multi_channel_loader
+```
+
+该测试 monkeypatch `load_audio_multi_channel()`，确认：
+
+- Kernel 调用的是 multi-channel loader；
+- RC 中的 raw buffer 保持 `(2, 128)`；
+- metadata 中的 sample_rate 使用 loader 返回的 `48000`，而不是调用参数中的 `22050`。
+
+### 验证命令
+
+```powershell
+& D:\anaconda\envs\pyq\python.exe -m py_compile `
+  src\kernel\kernel.py `
+  tests\unit\test_kernel.py
+```
+
+```powershell
+& D:\anaconda\envs\pyq\python.exe -m pytest `
+  tests/unit/test_kernel.py::TestKernel::test_load_workshop_raw_audio_uses_multi_channel_loader `
+  tests/unit/test_kernel.py::TestKernel::test_start_separation_task_persists_tab2_tracks `
+  -q
+```
+
+实际验证结果：
+
+- `py_compile` 通过；
+- pytest 在当前 Windows 环境中仍被临时目录权限拦截，未进入业务断言：
+
+```text
+PermissionError: [WinError 5] 拒绝访问。:
+'C:\\Users\\goneday\\AppData\\Local\\Temp\\pytest-of-goneday'
+```
+
+以及使用仓库内 `--basetemp=.pytest_run_tmp_multi_audio` 时，pytest cleanup 阶段仍出现同类权限错误。该问题与此前 `.pytest_cache` / `.pytest_tmp` 权限 warning 属同一类环境问题。
+
+补充手动验证通过：
+
+```powershell
+& D:\anaconda\envs\pyq\python.exe -c "<manual Kernel + monkeypatch load_audio_multi_channel check>"
+```
+
+输出：
+
+```text
+multi-channel raw load ok (2, 128) 48000
+```
+
+含义：
+
+- `Kernel._load_workshop_raw_audio_into_rc()` 已走 `load_audio_multi_channel()`；
+- RC 中 `raw` buffer 保持 `(channels, samples)`；
+- `sample_rate` 使用 loader 返回的真实采样率 `48000`。

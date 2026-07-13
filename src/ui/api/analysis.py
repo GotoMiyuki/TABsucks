@@ -212,11 +212,14 @@ async def trigger_separation(
     if kernel.manager.get(wid) is None:
         _err(404, f"车间 {wid} 不存在")
     # 由 Orchestrator.start_separation 异步 emit "separation_started/progress/done"
-    kernel.start_separation_task(
-        wid,
-        plugin_name=req.model,
-        durations_sec=3.0,
-    )
+    try:
+        kernel.start_separation_task(
+            wid,
+            plugin_name=req.model,
+            durations_sec=3.0,
+        )
+    except Exception as e:  # noqa: BLE001
+        _err(400, f"启动分离失败: {e}")
     # 不 await — 让 FastAPI BackgroundTasks 的协程跑完
     return {"ok": True, "task": req.model}
 

@@ -1,20 +1,4 @@
-"""Kernel 编排层：把 PM/AE/RC 装配起来 + 让 Workshop 可以发起任务。
-
-依据：
-* 会议 §2 PM/AE/RC 协作
-* :py:mod:`src.kernel.core.plugin_manager.PluginManager`
-* :py:mod:`src.kernel.core.analysis_engine.AnalysisEngine`
-* 本仓库的 ``Plugin`` ABC（：py:meth:`name/version/execute(rc, **kwargs)`）
-
-模块功能：
-
-1. :py:class:`Orchestrator` —— 实例化 PM 与 RC，注册【范例 plugin】（MVP）
-2. :py:meth:`Orchestrator.start_separation`：发起分离任务，跑在 BackgroundTasks 里，
-   通过 :py:func:`make_progress_callback` 把进度推到 :py:class:`EventBus`。
-3. :py:meth:`Orchestrator.start_analysis`：分析同上。
-
-MVP 阶段，所有 plugin 都是 :py:mod:`src.plugins._example_separator` / ``_example_analyzer``。
-"""
+"""Kernel orchestration layer: ResourceController + PluginManager + AnalysisEngine."""
 
 from __future__ import annotations
 
@@ -24,7 +8,7 @@ from collections.abc import Callable
 from typing import Any
 
 from src.kernel.core.analysis_engine import AnalysisEngine
-from src.kernel.core.plugin_manager import PluginManager
+from src.kernel.core.plugin_manager import PluginManager, PluginManagerError
 from src.kernel.core.resource_controller import ResourceController
 
 logger = logging.getLogger(__name__)
@@ -37,11 +21,7 @@ def make_progress_callback(
     *,
     extra: dict[str, Any] | None = None,
 ) -> Callable[[float], None]:
-    """构造 plugin ``progress_callback``：把 0~1 进度推到 :py:class:`EventBus`。
-
-    返回的闭包可安全地传给 ``plugin.execute(rc, progress_callback=cb)``。
-    extra：每个 emit 携带的额外字段（如 ``{"track": "vocals"}``）。
-    """
+    """Build a plugin progress callback that emits to EventBus."""
     payload_base: dict[str, Any] = dict(extra or {})
 
     def cb(progress: float) -> None:
@@ -50,71 +30,93 @@ def make_progress_callback(
             payload.update(payload_base)
             bus.emit(wid, event_type, payload)
         except Exception as e:  # noqa: BLE001
-            logger.debug("progress_callback 推送异常: %s", e)
+            logger.debug("progress callback emit failed: %s", e)
 
     return cb
+
+
+def emit_progress_event(
+    bus,
+    wid: str,
+    event_type: str,
+    progress: float,
+    **extra: Any,
+) -> None:
+    """Emit one progress event with optional structured context."""
+    payload = {"progress": float(progress)}
+    payload.update(extra)
+    bus.emit(wid, event_type, payload)
 
 
 async def call_plugin_execute_async(
     plugin,
     rc,
     *,
-    progress_interval_sec: float = 0.03,
+    progress_interval_sec: float = 0.5,
     durations_sec: float = 3.0,
     progress_callback=None,
 ) -> dict[str, Any]:
-    """异步包装同步 plugin：把 ``time.sleep`` 改成 ``asyncio.sleep``。
+    """Run a plugin from async orchestration code.
 
-    如果 plugin 自己有 ``run_async`` 协程（看 _example_separator.run_async），优先用之。
-    否则开一个线程跑同步版本。``progress_callback`` 同时被传给 ``run_async`` /
-    同步 ``execute``，由 plugin 决定何时调用。
+    If the plugin instance exposes an async ``run_async`` method, use it.
+    Otherwise execute the synchronous ``execute`` method in the default executor.
     """
-    # 优先 plugin.run_async
     run_async = getattr(plugin, "run_async", None)
     if run_async is not None and asyncio.iscoroutinefunction(run_async):
-        if progress_callback is not None:
-            return await run_async(
-                rc,
-                durations_sec=durations_sec,
-                progress_callback=progress_callback,
-            )
-        return await run_async(rc, durations_sec=durations_sec)
-
-    # 回退：在默认 executor 跑同步 execute
-    loop = asyncio.get_running_loop()
-
-    def sync_run():
-        kwargs: dict[str, Any] = {"durations_sec": 0.0}
+        kwargs: dict[str, Any] = {"durations_sec": durations_sec}
         if progress_callback is not None:
             kwargs["progress_callback"] = progress_callback
+        return await run_async(rc, **kwargs)
+
+    loop = asyncio.get_running_loop()
+    last_progress = 0.0
+
+    def emit_progress(progress: float) -> None:
+        nonlocal last_progress
+        if progress_callback is None:
+            return
+        bounded = max(0.0, min(float(progress), 0.99))
+        if bounded < last_progress:
+            bounded = last_progress
+        last_progress = bounded
+        progress_callback(bounded)
+
+    def sync_run():
+        kwargs: dict[str, Any] = {"durations_sec": durations_sec}
+        if progress_callback is not None:
+            kwargs["progress_callback"] = emit_progress
         return plugin.execute(rc, **kwargs)
 
-    return await loop.run_in_executor(None, sync_run)
+    future = loop.run_in_executor(None, sync_run)
+    if progress_callback is None:
+        return await future
+
+    heartbeat_interval = max(float(progress_interval_sec), 0.05)
+    while not future.done():
+        done, _ = await asyncio.wait({future}, timeout=heartbeat_interval)
+        if done:
+            break
+        if last_progress < 0.95:
+            emit_progress(min(0.95, last_progress + 0.02))
+
+    return await future
 
 
 class Orchestrator:
-    """进程级 PM/AE 编排者。
+    """Process-level coordinator for plugin execution."""
 
-    :py:meth:`__init__` 时：
-
-    * 实例化 :py:class:`ResourceController`
-    * 实例化 :py:class:`PluginManager`
-    * 注册 :py:mod:`src.plugins._example_separator` 和 :py:mod:`_example_analyzer`
-    * 实例化 :py:class:`AnalysisEngine`
-
-    未来可以接入其他真实 plugin（如 BS-RoFormer 通过 manifest 扫盘）。
-
-    Attributes:
-        rc: 资源控制器。
-        pm: 插件管理器。
-        ae: 分析引擎。
-    """
-
-    #: 默认 plugins（MVP 范例）
     DEFAULT_PLUGINS: tuple[str, ...] = (
         "src.plugins._example_separator:ExampleSeparatorPlugin",
         "src.plugins._example_analyzer:ExampleAnalyzerPlugin",
     )
+
+    SEPARATOR_ALIASES: dict[str, str] = {
+        "BS-RoFormer": "example_separator",
+        "BS-RoFormer-SW": "example_separator",
+        "BS-Roformer-SW": "example_separator",
+        "BS-Roformer-SW.ckpt": "separation_bs_roformer",
+        "BS-Roformer-SW.yaml": "separation_bs_roformer",
+    }
 
     def __init__(
         self,
@@ -129,14 +131,10 @@ class Orchestrator:
             self._register_default_plugins()
         self.ae: AnalysisEngine = AnalysisEngine(self.rc, self.pm)
 
-    # ---------- 插件注册 ----------
-
     def _register_default_plugins(self) -> None:
-        """注册 MVP 阶段的两个范例 plugin。
-
-        用 ``importlib`` + ``:`` 形式定位（与现有 PM 风格一致）。
-        """
+        """Register MVP example plugins explicitly."""
         import importlib
+
         for path in self.DEFAULT_PLUGINS:
             module_path, _, class_name = path.partition(":")
             try:
@@ -147,7 +145,20 @@ class Orchestrator:
             except Exception as e:  # noqa: BLE001
                 logger.warning("Failed to register %s: %s", path, e)
 
-    # ---------- 任务启动 ----------
+    def _resolve_separator_name(self, plugin_name: str) -> str:
+        """Accept old UI model labels while moving toward plugin ids."""
+        if self.pm.get(plugin_name) is not None or self.pm.get_manifest(plugin_name) is not None:
+            return plugin_name
+        return self.SEPARATOR_ALIASES.get(plugin_name, plugin_name)
+
+    def _ensure_plugin(self, plugin_name: str, config: dict[str, Any] | None = None):
+        """Return a registered plugin or lazily instantiate a manifest plugin."""
+        try:
+            return self.pm.ensure_plugin(plugin_name, config=config)
+        except PluginManagerError:
+            raise
+        except Exception as e:  # noqa: BLE001
+            raise PluginManagerError(str(e)) from e
 
     def start_separation(
         self,
@@ -160,17 +171,7 @@ class Orchestrator:
         progress_event: str = "separation_progress",
         durations_sec: float = 3.0,
     ) -> asyncio.Task:
-        """异步启动分离任务。
-
-        步骤：
-        1. 把 audio_samples 写到 RC buffer "raw" + metadata sample_rate
-        2. 构造 progress_callback（推到 bus）
-        3. 异步执行 plugin.execute，bus.emit "separation_started"/"progress"/"done"/"failed"
-        4. 返回 asyncio.Task 让调用方 await
-
-        Returns:
-            asyncio.Task，结果是 plugin 返回的 dict。
-        """
+        """Start a separation plugin task and emit lifecycle/progress events."""
         import numpy as np
 
         if audio_samples is not None:
@@ -179,42 +180,72 @@ class Orchestrator:
             self.rc.set_metadata("sample_rate", int(sample_rate))
 
         async def _run() -> dict[str, Any]:
-            bus.emit(wid, "separation_started", {"plugin": plugin_name})
-
+            resolved_plugin = self._resolve_separator_name(plugin_name)
+            bus.emit(wid, "separation_started", {"plugin": resolved_plugin})
             cb = make_progress_callback(bus, wid, progress_event)
-
-            plugin = self.pm.get(plugin_name)
-            if plugin is None:
-                bus.emit(
-                    wid,
-                    "separation_failed",
-                    {"plugin": plugin_name, "error": f"plugin 不存在: {plugin_name}"},
-                )
-                return {"status": "failed"}
+            emit_progress_event(
+                bus,
+                wid,
+                progress_event,
+                0.01,
+                plugin=resolved_plugin,
+                stage="loading_plugin",
+            )
 
             try:
+                plugin = self._ensure_plugin(resolved_plugin)
+            except PluginManagerError as e:
+                bus.emit(wid, "separation_failed", {"plugin": resolved_plugin, "error": str(e)})
+                return {"status": "failed", "error": str(e)}
+
+            if plugin is None:
+                message = f"plugin not found: {resolved_plugin}"
+                bus.emit(wid, "separation_failed", {"plugin": resolved_plugin, "error": message})
+                return {"status": "failed", "error": message}
+
+            is_manifest_plugin = self.pm.get_manifest(resolved_plugin) is not None
+            try:
+                if is_manifest_plugin:
+                    emit_progress_event(
+                        bus,
+                        wid,
+                        progress_event,
+                        0.03,
+                        plugin=resolved_plugin,
+                        stage="preparing_vram",
+                    )
+                    vram = self.pm.prepare_vram(resolved_plugin)
+                    if not vram.get("ready", False):
+                        raise PluginManagerError(vram.get("message", "VRAM is not ready"))
+
+                emit_progress_event(
+                    bus,
+                    wid,
+                    progress_event,
+                    0.05,
+                    plugin=resolved_plugin,
+                    stage="running_plugin",
+                )
                 result = await call_plugin_execute_async(
                     plugin,
                     self.rc,
                     durations_sec=durations_sec,
                     progress_callback=cb,
                 )
+                cb(1.0)
                 stems = result.get("data", {}).get("stems", []) if isinstance(result, dict) else []
-                bus.emit(wid, "separation_done", {"plugin": plugin_name, "stems": stems})
+                bus.emit(wid, "separation_done", {"plugin": resolved_plugin, "stems": stems})
                 return result
             except Exception as e:  # noqa: BLE001
-                bus.emit(
-                    wid,
-                    "separation_failed",
-                    {"plugin": plugin_name, "error": str(e)},
-                )
+                bus.emit(wid, "separation_failed", {"plugin": resolved_plugin, "error": str(e)})
                 return {"status": "failed", "error": str(e)}
+            finally:
+                if is_manifest_plugin:
+                    self.rc.release_vram(resolved_plugin)
 
-        # 在调用方 loop 跑（FastAPI BackgroundTasks 通常提供 loop）
         try:
             loop = asyncio.get_running_loop()
         except RuntimeError:
-            # 测试 / 同步上下文：开新 loop 跑
             loop = asyncio.new_event_loop()
         return loop.create_task(_run())
 
@@ -228,31 +259,37 @@ class Orchestrator:
         progress_event: str = "analysis_progress",
         durations_sec: float = 1.5,
     ) -> asyncio.Task:
-        """异步启动分析。"""
-        async def _run() -> dict[str, Any]:
-            bus.emit(
-                wid,
-                "analysis_started",
-                {"plugin": plugin_name, "track": stem_name},
-            )
+        """Start an analyzer plugin task and emit lifecycle/progress events."""
 
+        async def _run() -> dict[str, Any]:
+            bus.emit(wid, "analysis_started", {"plugin": plugin_name, "track": stem_name})
             cb = make_progress_callback(
                 bus,
                 wid,
                 progress_event,
                 extra={"track": stem_name},
             )
-            plugin = self.pm.get(plugin_name)
-            if plugin is None:
+
+            try:
+                plugin = self._ensure_plugin(plugin_name)
+            except PluginManagerError as e:
                 bus.emit(
                     wid,
                     "analysis_failed",
-                    {"plugin": plugin_name, "track": stem_name, "error": "plugin 不存在"},
+                    {"plugin": plugin_name, "track": stem_name, "error": str(e)},
                 )
-                return {"status": "failed"}
+                return {"status": "failed", "error": str(e)}
+
+            if plugin is None:
+                message = f"plugin not found: {plugin_name}"
+                bus.emit(
+                    wid,
+                    "analysis_failed",
+                    {"plugin": plugin_name, "track": stem_name, "error": message},
+                )
+                return {"status": "failed", "error": message}
 
             try:
-                # 给 plugin 喂 RC 中已经有的 stem buffer（无需再次 set）
                 result = await call_plugin_execute_async(
                     plugin,
                     self.rc,
@@ -283,28 +320,27 @@ class Orchestrator:
             loop = asyncio.new_event_loop()
         return loop.create_task(_run())
 
-    # ---------- 查询 ----------
-
     def list_separator_plugins(self) -> list[dict[str, Any]]:
-        """列出可用的分离 plugin 描述（给 UI 下拉列表）。
-
-        MVP 阶段返回纯手动列表，未来可走 manifest 扫盘。
-        """
-        return [
-            {
-                "name": "example_separator",
-                "display_name": "Mock 6-Stem Separator (范例)",
-                "version": "0.0.1",
-                "mock": True,
-            }
-        ]
+        """List real manifest-backed separators plus the example fallback."""
+        plugins = self.pm.get_available_plugins(phase="separation")
+        existing = {p.get("name") for p in plugins}
+        if "example_separator" not in existing and self.pm.get("example_separator") is not None:
+            plugins.append(
+                {
+                    "name": "example_separator",
+                    "display_name": "Mock 6-Stem Separator (example)",
+                    "version": "0.0.1",
+                    "mock": True,
+                }
+            )
+        return plugins
 
     def list_analyzer_plugins(self) -> list[dict[str, Any]]:
-        """列出可用的分析 plugin 描述。"""
+        """List analyzer plugins available to Tab3."""
         return [
             {
                 "name": "example_analyzer",
-                "display_name": "Mock Analyzer (范例)",
+                "display_name": "Mock Analyzer (example)",
                 "version": "0.0.1",
                 "mock": True,
                 "input_kind": "stem",

@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
 import threading
 import time
 from pathlib import Path
 from queue import Empty
 
+import numpy as np
 import pytest
 
 from src.kernel.core.workshop import MixState  # noqa: E402
@@ -219,6 +221,82 @@ class TestKernel:
             except Empty:
                 pass
         assert "workshop_created" in seen_types
+
+    def test_start_separation_task_persists_tab2_tracks(
+        self,
+        kernel_in_tmp: Kernel,
+    ) -> None:
+        info = kernel_in_tmp.create_workshop("Separate Me")
+        wid = info["id"]
+        samples = np.zeros(22050, dtype=np.float32)
+
+        async def runner():
+            await kernel_in_tmp.start_separation_task(
+                wid,
+                plugin_name="example_separator",
+                audio_samples=samples,
+                sample_rate=22050,
+                durations_sec=0.0,
+            )
+
+        asyncio.run(runner())
+
+        ws = kernel_in_tmp.manager.get(wid)  # type: ignore[union-attr]
+        assert ws is not None
+        assert ws.get_separation_state() == "done"
+        track_paths = ws.get_track_audio_paths()
+        assert "vocals" in track_paths
+        assert "other" in track_paths
+        assert track_paths["vocals"].is_file()
+
+    def test_recovers_raw_audio_path_from_disk_state(
+        self,
+        kernel_in_tmp: Kernel,
+    ) -> None:
+        info = kernel_in_tmp.create_workshop("Recover Raw")
+        ws = kernel_in_tmp.manager.get(info["id"])  # type: ignore[union-attr]
+        assert ws is not None
+        raw_path = ws.set_raw_audio_from_bytes(b"fake audio", "song.mp3")
+
+        ws.state.tab_state.tab1.raw_audio_file_path = None
+        recovered = Kernel._recover_workshop_raw_audio_path(ws)
+
+        assert recovered == raw_path
+        assert Path(ws.state.tab_state.tab1.raw_audio_file_path) == Path(
+            "raw_audio/song.mp3"
+        )
+
+    def test_load_workshop_raw_audio_uses_multi_channel_loader(
+        self,
+        kernel_in_tmp: Kernel,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        info = kernel_in_tmp.create_workshop("Stereo Raw")
+        ws = kernel_in_tmp.manager.get(info["id"])  # type: ignore[union-attr]
+        assert ws is not None
+        ws.set_raw_audio_from_bytes(b"fake audio", "song.wav")
+
+        from src.audio.loader import AudioData
+
+        stereo = np.zeros((2, 128), dtype=np.float32)
+
+        def fake_load_audio_multi_channel(path):
+            assert path.name == "song.wav"
+            return AudioData(samples=stereo, sample_rate=48000, duration=128 / 48000)
+
+        monkeypatch.setattr(
+            "src.audio.loader.load_audio_multi_channel",
+            fake_load_audio_multi_channel,
+        )
+
+        kernel_in_tmp._load_workshop_raw_audio_into_rc(
+            info["id"],
+            sample_rate=22050,
+        )
+
+        orch = kernel_in_tmp._require_orchestrator()
+        np.testing.assert_array_equal(orch.rc.get_buffer("raw"), stereo)
+        assert orch.rc.get_metadata("sample_rate") == 48000
 
     def test_require_manager_before_boot_raises(self, tmp_path: Path) -> None:
         k = Kernel(cache_root=tmp_path, autosave=False)

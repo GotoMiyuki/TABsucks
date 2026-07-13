@@ -10,11 +10,11 @@ from src.analysis.chord import ChordAnalyzer, ChordEvent
 from src.analysis.key import KeyAnalysis, analyze_key
 from src.analysis.refiner import refine
 from src.analysis.rhythm import RhythmAnalyzer, RhythmInfo
-from src.kernel.core.plugin_manager import PluginManager
+from src.kernel.core.plugin_manager import PluginManager, PluginManagerError
 from src.kernel.core.resource_controller import ResourceController
 
 if TYPE_CHECKING:
-    from src.plugins.separation.separator import SeparationResult
+    from src.plugins.separation.separator_old_type import SeparationResult
 
 
 @dataclass
@@ -247,8 +247,28 @@ class AnalysisEngine:
 
     def _run_separation(self) -> object:
         """执行音轨分离并将结果写入 RC buffer。"""
+        plugin_name = "separation_bs_roformer"
+
+        try:
+            plugin = self._pm.ensure_plugin(plugin_name)
+        except PluginManagerError:
+            plugin = None
+
+        if plugin is not None:
+            if self._pm.get_manifest(plugin_name) is not None:
+                vram = self._pm.prepare_vram(plugin_name)
+                if not vram.get("ready", False):
+                    raise AnalysisEngineError(vram.get("message", "VRAM is not ready"))
+            try:
+                result = self._pm.execute(plugin_name)
+                self._rc.set_metadata("separation_plugin_result", result)
+                return result
+            finally:
+                if self._pm.get_manifest(plugin_name) is not None:
+                    self._rc.release_vram(plugin_name)
+
         from src.audio.loader import AudioData
-        from src.plugins.separation.separator import Separator, TrackId
+        from src.plugins.separation.separator_old_type import Separator, TrackId
 
         raw_audio = self._rc.get_buffer("raw")
         sr = self._rc.get_metadata("sample_rate") or 44100

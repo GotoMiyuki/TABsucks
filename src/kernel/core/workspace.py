@@ -25,7 +25,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 
 if TYPE_CHECKING:
-    from src.plugins.separation.separator import SeparationResult
+    from src.plugins.separation import SeparationResult
 
 
 @dataclass
@@ -131,7 +131,7 @@ class Workspace:
             return None
         # 假设 _separation_result 是我们之前写的 SeparationResult 对象
         try:
-            from src.plugins.separation.separator import TrackId
+            from src.plugins.separation import TrackId
             track_enum = TrackId(self.selected_analysis_track_id)
             return self._separation_result.get_track(track_enum)
         except ValueError:

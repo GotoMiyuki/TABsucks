@@ -68,6 +68,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     stream
         .on('separation_progress', p => updateSepProgress(p.progress))
         .on('separation_done', () => onSeparationDone())
+        .on('separation_failed', p => onSeparationFailed(p))
         .on('analysis_started', p => onAnalysisStarted(p.track))
         .on('analysis_done', p => onAnalysisDone(p))
         .on('url_download_progress', p => updateDlProgress(p.progress));
@@ -514,6 +515,15 @@ function onSeparationDone() {
     showToast('分离完成', 'success');
     // 跳到 Step 3（可视化可选展示）
     setTab(3);
+}
+
+function onSeparationFailed(payload = {}) {
+    const msg = payload.error || 'unknown error';
+    showToast(`分离失败: ${msg}`, 'error');
+    for (const suffix of ['', '-2']) {
+        const label = document.getElementById(`sep-ring-label${suffix}`);
+        if (label) label.textContent = 'failed';
+    }
 }
 
 function onAnalysisStarted(track) {

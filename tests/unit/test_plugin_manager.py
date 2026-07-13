@@ -95,3 +95,9 @@ class TestPluginManager:
         self.pm.register(plugin_v1)
         self.pm.register(plugin_v2)
         assert self.pm.get("rhythm_foundation") is plugin_v2
+
+    def test_ensure_manifest_separator_imports_model_entrypoint(self) -> None:
+        plugin = self.pm.ensure_plugin("separation_bs_roformer")
+
+        assert plugin is not None
+        assert plugin.name == "separation_bs_roformer"

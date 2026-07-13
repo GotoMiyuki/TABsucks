@@ -25,6 +25,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import threading
 import time
@@ -335,19 +336,162 @@ class Kernel:
             :py:class:`asyncio.Task`，业务方 await 拿到 plugin 返回的 dict。
         """
         orch = self._require_orchestrator()
+        mgr = self._require_manager()
+        ws = mgr.get(wid)
+        if ws is None:
+            raise RuntimeError(f"Workshop not found: {wid}")
+
         import numpy as np
 
         if audio_samples is not None:
             arr = np.asarray(audio_samples, dtype=np.float32)
             orch.rc.set_buffer("raw", arr)
             orch.rc.set_metadata("sample_rate", int(sample_rate))
+        else:
+            self._load_workshop_raw_audio_into_rc(wid, sample_rate=sample_rate)
 
-        return orch.start_separation(
+        ws.start_separation(plugin_name)
+        inner_task = orch.start_separation(
             wid,
             self.bus,
             plugin_name=plugin_name,
             durations_sec=durations_sec,
         )
+        return asyncio.create_task(
+            self._finalize_separation_task(wid, plugin_name, inner_task)
+        )
+
+    def _load_workshop_raw_audio_into_rc(
+        self,
+        wid: str,
+        *,
+        sample_rate: int = 22050,
+    ) -> None:
+        """Load the workshop's persisted raw audio into the orchestration RC."""
+        mgr = self._require_manager()
+        ws = mgr.get(wid)
+        if ws is None:
+            raise RuntimeError(f"Workshop not found: {wid}")
+
+        raw_path = ws.get_raw_audio_path()
+        if raw_path is None:
+            raw_path = self._recover_workshop_raw_audio_path(ws)
+        if raw_path is None:
+            raise RuntimeError(f"Workshop {wid} has no raw audio")
+
+        from src.audio.loader import load_audio_multi_channel
+
+        audio = load_audio_multi_channel(raw_path)
+        orch = self._require_orchestrator()
+        orch.rc.set_buffer("raw", audio.samples)
+        orch.rc.set_metadata("sample_rate", int(audio.sample_rate))
+        orch.rc.set_metadata("raw_audio_path", str(raw_path))
+
+    @staticmethod
+    def _recover_workshop_raw_audio_path(ws) -> Path | None:
+        """Recover raw audio path from persisted workshop state when memory is stale."""
+        try:
+            raw_state = ws.cache.load_state() or {}
+            rel_path = (
+                raw_state.get("TabState", {})
+                .get("Tab1", {})
+                .get("RawAudioFilePath")
+            )
+            if not isinstance(rel_path, str) or not rel_path:
+                return None
+            raw_path = ws.cache.to_absolute(rel_path)
+        except Exception:  # noqa: BLE001
+            return None
+
+        if not raw_path.is_file():
+            return None
+        ws.state.tab_state.tab1.raw_audio_file_path = rel_path
+        return raw_path
+
+    async def _finalize_separation_task(
+        self,
+        wid: str,
+        plugin_name: str,
+        inner_task,
+    ) -> dict[str, Any]:
+        """Persist separated stem buffers back into the workshop state."""
+        mgr = self._require_manager()
+        ws = mgr.get(wid)
+        if ws is None:
+            raise RuntimeError(f"Workshop not found: {wid}")
+
+        try:
+            result = await inner_task
+            if not isinstance(result, dict) or result.get("status") == "failed":
+                error = (
+                    result.get("error", "separation failed")
+                    if isinstance(result, dict)
+                    else "separation failed"
+                )
+                ws.fail_separation(str(error))
+                return result
+
+            track_files = self._persist_separated_tracks(wid, plugin_name)
+            ws.complete_separation(track_files)
+            return result
+        except Exception as e:  # noqa: BLE001
+            ws.fail_separation(str(e))
+            raise
+
+    def _persist_separated_tracks(
+        self,
+        wid: str,
+        plugin_name: str,
+    ) -> dict[str, str]:
+        """Write RC stem buffers to workshop cache and return relative paths."""
+        mgr = self._require_manager()
+        ws = mgr.get(wid)
+        if ws is None:
+            raise RuntimeError(f"Workshop not found: {wid}")
+
+        orch = self._require_orchestrator()
+        stems = orch.rc.get_metadata("separated_stems")
+        if not stems:
+            stems = ["vocals", "drums", "bass", "piano", "guitar", "other"]
+
+        sample_rate = int(orch.rc.get_metadata("sample_rate") or 44100)
+        track_files: dict[str, str] = {}
+
+        from src.audio.loader import AudioData, save_audio
+
+        for stem in stems:
+            stem_name = str(stem)
+            try:
+                samples = orch.rc.get_buffer(stem_name)
+            except Exception:  # noqa: BLE001
+                continue
+            audio_samples = self._normalize_audio_samples_for_save(samples)
+
+            out_path = ws.cache.track_audio_path(
+                stem_name,
+                f"{plugin_name}_{stem_name}.wav",
+            )
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+            save_audio(
+                out_path,
+                AudioData(
+                    samples=audio_samples,
+                    sample_rate=sample_rate,
+                    duration=audio_samples.shape[-1] / sample_rate,
+                ),
+            )
+            track_files[stem_name] = ws.cache.to_relative(out_path)
+
+        if not track_files:
+            raise RuntimeError("No separated stem buffers were produced")
+        return track_files
+
+    @staticmethod
+    def _normalize_audio_samples_for_save(samples):
+        """Return samples in AudioData's ``(channels, samples)`` convention."""
+        if getattr(samples, "ndim", 0) == 2 and samples.shape[1] <= 8 < samples.shape[0]:
+            return samples.T
+        return samples
 
     def start_analysis_task(
         self,

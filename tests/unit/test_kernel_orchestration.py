@@ -7,11 +7,13 @@
 from __future__ import annotations
 
 import asyncio
+import time
 
 import numpy as np
 
 from src.kernel.core.kernel_orchestrator import (
     Orchestrator,
+    call_plugin_execute_async,
     make_progress_callback,
 )
 from src.kernel.kernel import EventBus
@@ -124,6 +126,28 @@ class TestStartSeparation:
         evs = _drain_queue_until_terminal(sub_q)
         failed = next(e for e in evs if e.type == "separation_failed")
         assert "non_existent_plugin" in failed.payload.get("plugin", "")
+
+    def test_sync_plugin_without_progress_gets_heartbeat(self) -> None:
+        class SlowSyncPlugin:
+            def execute(self, rc, **kwargs):
+                time.sleep(0.16)
+                return {"status": "success", "data": {"stems": []}}
+
+        progress: list[float] = []
+
+        async def runner():
+            return await call_plugin_execute_async(
+                SlowSyncPlugin(),
+                rc=None,
+                progress_interval_sec=0.05,
+                durations_sec=0.0,
+                progress_callback=progress.append,
+            )
+
+        result = asyncio.run(runner())
+
+        assert result["status"] == "success"
+        assert any(0.0 < p < 1.0 for p in progress)
 
 
 class TestStartAnalysis:
