@@ -390,6 +390,43 @@ class Kernel:
         orch.rc.set_metadata("sample_rate", int(audio.sample_rate))
         orch.rc.set_metadata("raw_audio_path", str(raw_path))
 
+    def _load_workshop_stem_into_rc(
+        self,
+        wid: str,
+        stem_name: str,
+    ) -> None:
+        """Ensure a separated stem track is in the RC buffer.
+
+        If the stem is already in RC (same-session after separation), return
+        immediately. Otherwise load it from the workshop cache on disk.
+        """
+        orch = self._require_orchestrator()
+        try:
+            orch.rc.get_buffer(stem_name)
+            return  # already loaded
+        except Exception:  # noqa: BLE001
+            pass
+
+        mgr = self._require_manager()
+        ws = mgr.get(wid)
+        if ws is None:
+            raise RuntimeError(f"Workshop not found: {wid}")
+
+        track_paths = ws.get_track_audio_paths()
+        stem_path = track_paths.get(stem_name)
+        if stem_path is None or not stem_path.is_file():
+            raise RuntimeError(
+                f"Stem '{stem_name}' not found in workshop {wid}. "
+                f"Available: {sorted(track_paths.keys())}"
+            )
+
+        from src.audio.loader import load_audio
+
+        audio = load_audio(stem_path)
+        orch.rc.set_buffer(stem_name, audio.samples)
+        if orch.rc.get_metadata("sample_rate") is None:
+            orch.rc.set_metadata("sample_rate", int(audio.sample_rate))
+
     def _get_separator_model_path(self, plugin_name: str) -> str | None:
         """Return the manifest directory for a separator plugin when available."""
         orch = self._require_orchestrator()
@@ -514,15 +551,76 @@ class Kernel:
         stem_name: str = "vocals",
         durations_sec: float = 1.5,
     ):
-        """异步启动分析任务。"""
+        """异步启动分析任务。
+
+        1. 调 ``ws.upsert_analysis_task()`` 标 running + emit
+        2. Orchestrator 跑插件（SSE 推进度）
+        3. 完成后持久化结果 → ws.complete_analysis()
+        """
         orch = self._require_orchestrator()
-        return orch.start_analysis(
+        mgr = self._require_manager()
+        ws = mgr.get(wid)
+        if ws is None:
+            raise RuntimeError(f"Workshop not found: {wid}")
+
+        task_id = ws.upsert_analysis_task(stem_name, plugin_name)
+
+        # Load stem audio into RC so the plugin can read rc.get_buffer(stem_name)
+        try:
+            self._load_workshop_stem_into_rc(wid, stem_name)
+        except RuntimeError as e:
+            ws.fail_analysis(stem_name, task_id, str(e))
+            raise
+
+        inner_task = orch.start_analysis(
             wid,
             self.bus,
             plugin_name=plugin_name,
             stem_name=stem_name,
             durations_sec=durations_sec,
         )
+        return asyncio.create_task(
+            self._finalize_analysis_task(wid, stem_name, task_id, plugin_name, inner_task)
+        )
+
+    async def _finalize_analysis_task(
+        self,
+        wid: str,
+        stem_name: str,
+        task_id: str,
+        plugin_name: str,
+        inner_task,
+    ) -> dict[str, Any]:
+        """Persist analysis results back into workshop cache + state."""
+        mgr = self._require_manager()
+        ws = mgr.get(wid)
+        if ws is None:
+            raise RuntimeError(f"Workshop not found: {wid}")
+
+        try:
+            result = await inner_task
+            if not isinstance(result, dict) or result.get("status") == "failed":
+                error = (
+                    result.get("error", "analysis failed")
+                    if isinstance(result, dict)
+                    else "analysis failed"
+                )
+                ws.fail_analysis(stem_name, task_id, str(error))
+                return result
+
+            # Save result to cache/<wid>/analysis_result/<plugin>_result/result_<task_id>.json
+            result_data = result.get("data", {}) if isinstance(result, dict) else {}
+            if isinstance(result_data, list):
+                result_data = {"chords": result_data}
+            abs_path = ws.cache.save_analysis_result(
+                plugin_name, task_id, result_data, ext="json"
+            )
+            rel = ws.cache.to_relative(abs_path)
+            ws.complete_analysis(stem_name, task_id, rel)
+            return result
+        except Exception as e:  # noqa: BLE001
+            ws.fail_analysis(stem_name, task_id, str(e))
+            raise
 
 
 # ---------------------------------------------------------------------------

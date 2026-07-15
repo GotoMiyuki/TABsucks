@@ -41,7 +41,22 @@ def extract_band_envelopes(
     fps: int = 100,
     split_freq: float = 150.0
 ) -> Tuple[np.ndarray, np.ndarray]:
-    """使用 madmom STFT 快速计算低高频包络 (Spectral Flux)"""
+    """使用 madmom STFT 快速计算低高频包络 (Spectral Flux)。"""
+    if not MADMOM_AVAILABLE:
+        # Fallback: simple RMS energy split by frequency
+        frame_size = int(sample_rate / fps)
+        n_frames = max(1, len(samples) // frame_size)
+        rms = np.array([
+            np.sqrt(np.mean(samples[i * frame_size:(i + 1) * frame_size] ** 2) + 1e-8)
+            for i in range(n_frames)
+        ])
+        diff = np.diff(rms)
+        diff = np.where(diff > 0, diff, 0)
+        env = np.concatenate([np.zeros(1), diff])
+        env = env / (np.max(env) + 1e-8)
+        # Return same envelope for both bands (no frequency split without madmom)
+        return env.copy(), env.copy()
+
     sig = Signal(samples, sample_rate=sample_rate)
     frame_size = 2048
     hop_size = int(sample_rate / fps)

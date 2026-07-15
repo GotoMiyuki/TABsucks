@@ -20,6 +20,13 @@ from pathlib import Path
 
 import uvicorn
 
+# 确保 static-ffmpeg 的二进制在 PATH 中，供 audio-separator 等使用
+try:
+    import static_ffmpeg
+    static_ffmpeg.add_paths()
+except ImportError:
+    pass
+
 from src.kernel.core.cache_system import CACHE_ROOT_DEFAULT
 from src.kernel.kernel import Kernel
 from src.ui.server import make_app

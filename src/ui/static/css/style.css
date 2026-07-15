@@ -761,3 +761,89 @@ body.busy { cursor: wait; }
 .dl-progress-wrap { display: flex; align-items: center; gap: 10px; margin-top: 12px; }
 .dl-progress { width: 200px; height: 6px; accent-color: var(--accent); }
 .dl-progress-text { font-size: 11px; color: var(--text-dim); min-width: 28px; }
+
+/* ════════════════════════════════════════
+   Tab3 analysis config + results
+   ════════════════════════════════════════ */
+.analysis-config-list {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    margin-top: 12px;
+    max-width: 560px;
+}
+.analysis-track-card {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 14px;
+    border: 1px solid var(--border-dim);
+    border-radius: 6px;
+    background: var(--surface);
+}
+.analysis-track-card .track-label {
+    font-weight: 600;
+    font-size: 12px;
+    min-width: 72px;
+    text-transform: uppercase;
+}
+.sel-analyzer {
+    flex: 1;
+    padding: 5px 8px;
+    font-size: 11px;
+    font-family: var(--font);
+    background: var(--bg);
+    color: var(--text);
+    border: 1px solid var(--border-dim);
+    border-radius: 4px;
+}
+.analysis-status {
+    font-size: 12px;
+    min-width: 20px;
+    text-align: center;
+}
+.analysis-status.running { color: var(--accent); }
+.analysis-status.done { color: #34c759; }
+
+/* Tab3 results */
+.analysis-results-container {
+    padding: 20px;
+    max-width: 800px;
+}
+.analysis-results-list {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+}
+.result-track-card {
+    border: 1px solid var(--border-dim);
+    border-radius: 6px;
+    padding: 14px 18px;
+    background: var(--surface);
+}
+.result-track-header {
+    display: flex;
+    align-items: baseline;
+    gap: 12px;
+    margin-bottom: 8px;
+}
+.result-track-label {
+    font-weight: 700;
+    font-size: 13px;
+    text-transform: uppercase;
+}
+.result-meta {
+    font-size: 11px;
+    color: var(--text-dim);
+}
+.result-chords {
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--text);
+    word-break: break-all;
+    line-height: 1.6;
+}
+.result-chords .muted {
+    color: var(--text-dim);
+    font-weight: 400;
+}

@@ -43,6 +43,8 @@ class PluginManager:
 
     _DEFAULT_MANIFEST_SUBDIRS: tuple[tuple[str, ...], ...] = (
         ("plugins", "separation"),
+        ("plugins", "chord"),
+        ("plugins", "rhythm"),
     )
 
     def __init__(self, rc: ResourceController, *, auto_discover: bool = True) -> None:
@@ -96,6 +98,11 @@ class PluginManager:
             search_dir = src_dir.joinpath(*subdir)
             if not search_dir.is_dir():
                 continue
+            # Direct manifest at plugin root (chord/rhythm style)
+            direct = search_dir / "manifest.json"
+            if direct.is_file():
+                self._load_manifest_file(direct)
+            # Subdirectory manifests (separation/model_1 style)
             for manifest_path in sorted(search_dir.glob("*/manifest.json")):
                 self._load_manifest_file(manifest_path)
 

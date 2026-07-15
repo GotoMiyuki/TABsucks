@@ -169,6 +169,10 @@ class AnalysisEngine:
         """
         self._report(progress_callback, f"{plugin_name}:{track_id}", 0.0)
 
+        plugin = self._pm.ensure_plugin(plugin_name)
+        if plugin is None:
+            raise PluginManagerError(f"插件不存在: {plugin_name}")
+
         raw_result = self._pm.execute(plugin_name, stem_name=track_id)
 
         normalized = self._normalize_result(plugin_name, raw_result)
@@ -187,7 +191,11 @@ class AnalysisEngine:
 
     def _run_rhythm(self) -> RhythmInfo:
         """调用节奏插件并归一化结果。"""
-        plugin = self._pm.get("rhythm_foundation")
+        try:
+            plugin = self._pm.ensure_plugin("rhythm_foundation")
+        except PluginManagerError:
+            return RhythmInfo()
+
         if plugin is None:
             return RhythmInfo()
 
@@ -292,12 +300,14 @@ class AnalysisEngine:
             "chord_chordnet_2e1d",
             "chord_btc_sl",
             "chord_ismir2019",
-            "chord_analyzer_stem_aware",
         ]
 
         raw_result = None
         for plugin_name in chord_plugin_names:
-            plugin = self._pm.get(plugin_name)
+            try:
+                plugin = self._pm.ensure_plugin(plugin_name)
+            except PluginManagerError:
+                continue
             if plugin is not None:
                 raw_result = self._pm.execute(plugin_name, stem_name=stem)
                 break
@@ -313,7 +323,11 @@ class AnalysisEngine:
 
     def _run_bass_progression(self) -> list[ChordEvent]:
         """调用 bass_root 插件获取低音进行序列。"""
-        plugin = self._pm.get("chord_bass_root")
+        try:
+            plugin = self._pm.ensure_plugin("chord_bass_root")
+        except PluginManagerError:
+            return []
+
         if plugin is None:
             return []
 

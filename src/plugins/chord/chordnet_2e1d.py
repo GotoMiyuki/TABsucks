@@ -89,8 +89,9 @@ class ChordNet2E1DPlugin(BasePlugin):
         audio = rc.get_buffer(stem_name)
         sr = rc.get_metadata("sample_rate") or 22050
 
-        # 1. CQT 特征提取（不归一化，由推理流水线内部处理）
+        # 1. CQT 特征提取（重采样到 22050，不归一化，由推理流水线内部处理）
         features = _extract_cqt_features(audio, sr)
+        cqt_sr = 22050
 
         # 2. 加载模型
         checkpoint_path = kwargs.get("checkpoint")
@@ -110,13 +111,13 @@ class ChordNet2E1DPlugin(BasePlugin):
         )
 
         # 4. 帧级预测 → 和弦段
-        chords = _run_length_encode(predictions, hop_length=2048, sr=sr)
+        chords = _run_length_encode(predictions, hop_length=2048, sr=cqt_sr)
 
         rc.set_metadata(f"chord_raw_{stem_name}", chords)
         return {"status": "success", "stem": stem_name, "data": chords}
 
     def _init_model(self, rc: ResourceController, checkpoint_path: str | None = None):
-        """加载或复用 ChordNet 模型。"""
+        """加载或复用 ChordNet 模型。从 checkpoint state_dict 推断架构参数。"""
         _ensure_imports()
 
         if checkpoint_path is None:
@@ -130,9 +131,9 @@ class ChordNet2E1DPlugin(BasePlugin):
         checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
         state_dict, mean, std = _extract_state_dict_and_stats(checkpoint)
 
-        # 使用默认 ChordNet config，strict=False 处理架构参数差异
-        config = _get_chordnet_config()
-        model = _ChordNet_cls(**config.to_chordnet_kwargs())
+        # 从 checkpoint state_dict 推断实际架构参数
+        arch = self._infer_architecture(state_dict)
+        model = _ChordNet_cls(**arch)
         model.load_state_dict(state_dict, strict=False)
         model.eval()
 
@@ -142,6 +143,85 @@ class ChordNet2E1DPlugin(BasePlugin):
         result = (model, mean, std)
         rc.set_metadata(cache_key, result)
         return result
+
+    @staticmethod
+    def _infer_architecture(state_dict: dict) -> dict:
+        """从 checkpoint state_dict 推断 ChordNet 架构参数。
+
+        不同 checkpoint 可能使用不同的 n_group / 层数 / 头数。
+        通过检查关键参数的 shape 来还原实际架构。
+        """
+        # n_freq / n_classes: 从 fc 层权重推断
+        n_freq = 144
+        n_classes = 170
+        if "fc.weight" in state_dict:
+            n_classes = state_dict["fc.weight"].shape[0]
+            n_freq = state_dict["fc.weight"].shape[1]
+
+        # n_group: 从 encoder_f 第一个 attention 层的 out_proj 推断
+        # out_proj.weight shape = (d_model, d_model), d_model = n_freq // n_group
+        n_group = 2  # 常见默认值
+        for key, value in state_dict.items():
+            if "encoder_f.0.attn_layer.0.out_proj.weight" in key:
+                d_model = value.shape[0]
+                if d_model > 0 and n_freq % d_model == 0:
+                    n_group = n_freq // d_model
+                break
+
+        # f_layer / t_layer / d_layer: 通过统计 encoder_f / encoder_t / decoder 中
+        # attn_layer 的数量来推断层数
+        def _count_layers(prefix: str) -> int:
+            indices = set()
+            for key in state_dict:
+                if prefix not in key:
+                    continue
+                parts = key.split(".")
+                for i, part in enumerate(parts[:-1]):
+                    if part.startswith("attn_layer") and i + 1 < len(parts):
+                        try:
+                            indices.add(int(parts[i + 1]))
+                        except ValueError:
+                            pass
+            return max(indices) + 1 if indices else None
+
+        f_layer = _count_layers("encoder_f.0.attn_layer") or 3
+        t_layer = _count_layers("encoder_t.0.attn_layer") or 4
+        d_layer = _count_layers("decoder.attn_layer1") or 3
+
+        # f_head: 从 encoder_f 第一个 attention 层的 in_proj_weight 推断
+        # in_proj_weight shape = (3 * d_model, d_model), qkv 各占 d_model
+        # head_dim = d_model / f_head, 但这里 d_model 必须能被 f_head 整除
+        # 简化：用 d_model 的约数作为候选
+        def _infer_heads(prefix: str, d_model: int) -> int:
+            for key in state_dict:
+                if prefix in key and "in_proj_weight" in key:
+                    embed_dim_total = state_dict[key].shape[1]  # d_model
+                    if embed_dim_total == d_model:
+                        # 查找 d_model 的因子作为可能的 head 数
+                        for h in (8, 4, 2, 1):
+                            if d_model % h == 0:
+                                return h
+                    break
+            return 2
+
+        d_model = n_freq // n_group
+        f_head = _infer_heads("encoder_f.0.attn_layer.0", d_model)
+        t_head = _infer_heads("encoder_t.0.attn_layer.0", n_freq)
+        d_head = _infer_heads("decoder.attn_layer1.0", n_freq)
+
+        # dropout: 无法从 state_dict 推断，使用合理默认值
+        return {
+            "n_freq": n_freq,
+            "n_classes": n_classes,
+            "n_group": n_group,
+            "f_layer": f_layer,
+            "f_head": f_head,
+            "t_layer": t_layer,
+            "t_head": t_head,
+            "d_layer": d_layer,
+            "d_head": d_head,
+            "dropout": 0.3,
+        }
 
     @classmethod
     def _resolve_checkpoint_path(cls) -> str:

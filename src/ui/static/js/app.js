@@ -70,7 +70,9 @@ document.addEventListener('DOMContentLoaded', async () => {
         .on('separation_done', () => onSeparationDone())
         .on('separation_failed', p => onSeparationFailed(p))
         .on('analysis_started', p => onAnalysisStarted(p.track))
+        .on('analysis_progress', p => onAnalysisProgress(p.track, p.progress))
         .on('analysis_done', p => onAnalysisDone(p))
+        .on('analysis_failed', p => onAnalysisFailed(p.track, p.error))
         .on('url_download_progress', p => updateDlProgress(p.progress));
 
     // 启动时建立 SSE（一次连接永久用，按 wid 过滤）
@@ -288,6 +290,24 @@ async function loadActiveWorkshopData() {
 
     setTab(targetTab);
     state.separated = targetTab >= 3;
+
+    // 恢复分析配置面板（如果分离已完成）
+    if (sepDone) {
+        document.getElementById('phase-analyze')?.classList.remove('hidden');
+        loadAnalyzerPlugins().then(() => {
+            renderAnalysisConfig();
+            // 恢复已有分析结果状态
+            const tab3 = s.TabState?.Tab3 || {};
+            for (const [key, task] of Object.entries(tab3)) {
+                if (task.AnalysisState === 'done') {
+                    const [trackName] = key.split('::');
+                    state.analysisResults[trackName] = { _restored: true, task_id: task.AnalysisTaskId };
+                    updateAnalysisCardState(trackName, 'done');
+                }
+            }
+            renderAnalysisResults();
+        });
+    }
 }
 
 function setTab(n) {
@@ -466,6 +486,7 @@ function bindStep2() {
     }
 
     document.getElementById('btn-start-sep')?.addEventListener('click', triggerSeparation);
+    document.getElementById('btn-run-all')?.addEventListener('click', handleRunAllAnalyses);
 }
 
 function triggerSeparation() {
@@ -513,8 +534,10 @@ function updateSepProgress(p) {
 function onSeparationDone() {
     state.separated = true;
     showToast('分离完成', 'success');
-    // 跳到 Step 3（可视化可选展示）
-    setTab(3);
+    // 显示分析配置面板（step-2 phase 2b）
+    const phaseAnalyze = document.getElementById('phase-analyze');
+    if (phaseAnalyze) phaseAnalyze.classList.remove('hidden');
+    loadAnalyzerPlugins().then(() => renderAnalysisConfig());
 }
 
 function onSeparationFailed(payload = {}) {
@@ -528,18 +551,177 @@ function onSeparationFailed(payload = {}) {
 
 function onAnalysisStarted(track) {
     state.analysisRunning.add(track);
+    updateAnalysisCardState(track, 'running');
     showToast(`分析 ${track} 已开始...`, 'info');
+}
+
+function onAnalysisProgress(track, progress) {
+    const card = document.querySelector(`.analysis-track-card[data-track="${track}"]`);
+    if (!card) return;
+    const status = card.querySelector('.analysis-status');
+    if (status) {
+        status.textContent = `${Math.round((progress || 0) * 100)}%`;
+        status.className = 'analysis-status running';
+    }
 }
 
 function onAnalysisDone(payload) {
     const track = payload.track;
     state.analysisRunning.delete(track);
     state.analysisResults[track] = payload.result;
+    updateAnalysisCardState(track, 'done');
+    renderAnalysisResults();
     showToast(`分析 ${track} 完成`, 'success');
 }
 
+function onAnalysisFailed(track, error) {
+    state.analysisRunning.delete(track);
+    updateAnalysisCardState(track, 'idle');
+    showToast(`分析 ${track} 失败: ${error || '未知错误'}`, 'error');
+}
+
 // ══════════════════════════════════════
-//  Step 3 — OUTPUT (visualization)
+//  Tab3 — Analysis config + results
+// ══════════════════════════════════════
+
+let _analyzerPlugins = [];
+
+async function loadAnalyzerPlugins() {
+    const r = await api.listAnalyzerPlugins();
+    if (r.ok) {
+        _analyzerPlugins = Array.isArray(r) ? r : (r.data || []);
+    }
+    return _analyzerPlugins;
+}
+
+function renderAnalysisConfig() {
+    const container = document.getElementById('analysis-config-list');
+    if (!container) return;
+
+    const tracks = TRACKS;
+    if (_analyzerPlugins.length === 0) {
+        container.innerHTML = '<p class="empty-msg">no analyzer plugins available</p>';
+        return;
+    }
+
+    container.innerHTML = tracks.map(track => {
+        const opts = _analyzerPlugins.map(p =>
+            `<option value="${p.name}">${p.display_name || p.name}</option>`
+        ).join('');
+        const running = state.analysisRunning.has(track);
+        const done = state.analysisResults[track];
+        const statusCls = running ? 'running' : (done ? 'done' : '');
+        return `
+            <div class="analysis-track-card" data-track="${track}">
+                <span class="track-label" style="color:${TRACK_COLORS[track] || '#fff'}">
+                    ${TRACK_LABELS[track] || track}
+                </span>
+                <select class="sel-analyzer" data-track="${track}" ${running ? 'disabled' : ''}>
+                    ${opts}
+                </select>
+                <button class="btn-pill-sm btn-run-analysis" data-track="${track}" ${running ? 'disabled' : ''}>
+                    ${running ? 'running...' : (done ? 're-run' : 'run')}
+                </button>
+                <span class="analysis-status ${statusCls}">${running ? '···' : (done ? '✓' : '')}</span>
+            </div>`;
+    }).join('');
+
+    container.querySelectorAll('.btn-run-analysis').forEach(btn => {
+        btn.addEventListener('click', () => handleRunAnalysis(btn.dataset.track));
+    });
+}
+
+async function handleRunAnalysis(track) {
+    if (!state.currentWid) return;
+    if (state.analysisRunning.has(track)) return;
+
+    const sel = document.querySelector(`.sel-analyzer[data-track="${track}"]`);
+    const plugin = sel?.value;
+    if (!plugin) {
+        showToast(`请先为 ${track} 选择分析工具`, 'warning');
+        return;
+    }
+
+    state.analysisRunning.add(track);
+    updateAnalysisCardState(track, 'running');
+
+    const r = await api.analyze(state.currentWid, track, plugin);
+    if (!r.ok) {
+        state.analysisRunning.delete(track);
+        updateAnalysisCardState(track, 'idle');
+        showToast(`启动分析失败: ${r.error}`, 'error');
+    }
+}
+
+function updateAnalysisCardState(track, st) {
+    const card = document.querySelector(`.analysis-track-card[data-track="${track}"]`);
+    if (!card) return;
+    const btn = card.querySelector('.btn-run-analysis');
+    const status = card.querySelector('.analysis-status');
+    const sel = card.querySelector('.sel-analyzer');
+
+    if (st === 'running') {
+        if (btn) { btn.textContent = 'running...'; btn.disabled = true; }
+        if (sel) sel.disabled = true;
+        if (status) { status.textContent = '···'; status.className = 'analysis-status running'; }
+    } else if (st === 'done') {
+        if (btn) { btn.textContent = 're-run'; btn.disabled = false; }
+        if (sel) sel.disabled = false;
+        if (status) { status.textContent = '✓'; status.className = 'analysis-status done'; }
+    } else {
+        if (btn) { btn.textContent = 'run'; btn.disabled = false; }
+        if (sel) sel.disabled = false;
+        if (status) { status.textContent = ''; status.className = 'analysis-status'; }
+    }
+}
+
+function renderAnalysisResults() {
+    const container = document.getElementById('analysis-results-list');
+    if (!container) return;
+
+    const results = Object.entries(state.analysisResults);
+    if (results.length === 0) {
+        container.innerHTML = '<p class="empty-msg">no analysis results yet — run analysis in Tab2</p>';
+        return;
+    }
+
+    container.innerHTML = results.map(([track, result]) => {
+        const chords = result?.chords || result?.chord_labels || [];
+        const bpm = result?.bpm || result?.global_bpm || '';
+        const keyStr = result?.key || '';
+        const chordStr = Array.isArray(chords) && chords.length > 0
+            ? chords.slice(0, 8).map(c => c.name || c.chord || '').filter(Boolean).join(' → ')
+              + (chords.length > 8 ? ' …' : '')
+            : '';
+        return `
+            <div class="result-track-card">
+                <div class="result-track-header">
+                    <span class="result-track-label" style="color:${TRACK_COLORS[track] || '#fff'}">
+                        ${TRACK_LABELS[track] || track}
+                    </span>
+                    <span class="result-meta">${bpm ? 'BPM ' + bpm : ''} ${keyStr ? '· Key ' + keyStr : ''}</span>
+                </div>
+                <div class="result-chords">${chordStr || '<span class="muted">no chord data in result</span>'}</div>
+            </div>`;
+    }).join('');
+}
+
+async function handleRunAllAnalyses() {
+    if (!state.currentWid) return;
+    const cards = document.querySelectorAll('.analysis-track-card');
+    for (const card of cards) {
+        const track = card.dataset.track;
+        if (state.analysisRunning.has(track)) continue;
+        if (state.analysisResults[track]) continue;
+        const sel = card.querySelector('.sel-analyzer');
+        if (!sel?.value) continue;
+        await handleRunAnalysis(track);
+    }
+    showToast('分析任务已全部启动，等待 SSE 进度...', 'info');
+}
+
+// ══════════════════════════════════════
+//  Tab4 — Playback / visualization
 // ══════════════════════════════════════
 
 function bindPlayback() {

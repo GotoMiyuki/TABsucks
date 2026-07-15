@@ -32,15 +32,29 @@ class BassRootPlugin(Plugin):
             all_roots = [e.root for e in progression if e.root not in ("N", "X")]
             global_root = max(set(all_roots), key=all_roots.count) if all_roots else "N"
         else:
-            global_root = self._detect_root(audio, sr)
-            progression = []
+            # 无外部 beat_timestamps 时，用 librosa 自动检测节拍位置
+            import librosa
+            audio_mono = audio.astype(np.float64)
+            if audio_mono.ndim > 1:
+                audio_mono = np.mean(audio_mono, axis=0)
+            onset_env = librosa.onset.onset_strength(y=audio_mono, sr=sr)
+            _, beats = librosa.beat.beat_track(onset_envelope=onset_env, sr=sr)
+            beat_timestamps = librosa.frames_to_time(beats, sr=sr).tolist()
+            if len(beat_timestamps) >= 2:
+                progression = self._detect_progression(audio, sr, beat_timestamps)
+            else:
+                progression = []
+            all_roots = [e.root for e in progression if e.root not in ("N", "X")]
+            global_root = max(set(all_roots), key=all_roots.count) if all_roots else self._detect_root(audio, sr)
 
         rc.set_metadata("bass_root", global_root)
         rc.set_metadata("bass_progression", progression)
         return {
             "status": "success",
-            "bass_progression": [asdict(e) for e in progression],
-            "root": global_root,
+            "data": {
+                "bass_progression": [asdict(e) for e in progression],
+                "root": global_root,
+            },
         }
 
     def _detect_progression(

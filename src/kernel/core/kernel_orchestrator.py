@@ -55,15 +55,18 @@ async def call_plugin_execute_async(
     progress_interval_sec: float = 0.5,
     durations_sec: float = 3.0,
     progress_callback=None,
+    **extra_kwargs,
 ) -> dict[str, Any]:
     """Run a plugin from async orchestration code.
 
     If the plugin instance exposes an async ``run_async`` method, use it.
     Otherwise execute the synchronous ``execute`` method in the default executor.
+
+    Extra keyword arguments (e.g. ``stem_name``) are forwarded to the plugin.
     """
     run_async = getattr(plugin, "run_async", None)
     if run_async is not None and asyncio.iscoroutinefunction(run_async):
-        kwargs: dict[str, Any] = {"durations_sec": durations_sec}
+        kwargs: dict[str, Any] = {"durations_sec": durations_sec, **extra_kwargs}
         if progress_callback is not None:
             kwargs["progress_callback"] = progress_callback
         return await run_async(rc, **kwargs)
@@ -82,7 +85,7 @@ async def call_plugin_execute_async(
         progress_callback(bounded)
 
     def sync_run():
-        kwargs: dict[str, Any] = {"durations_sec": durations_sec}
+        kwargs: dict[str, Any] = {"durations_sec": durations_sec, **extra_kwargs}
         if progress_callback is not None:
             kwargs["progress_callback"] = emit_progress
         return plugin.execute(rc, **kwargs)
@@ -295,6 +298,7 @@ class Orchestrator:
                     self.rc,
                     durations_sec=durations_sec,
                     progress_callback=cb,
+                    stem_name=stem_name,
                 )
                 bus.emit(
                     wid,
@@ -336,16 +340,22 @@ class Orchestrator:
         return plugins
 
     def list_analyzer_plugins(self) -> list[dict[str, Any]]:
-        """List analyzer plugins available to Tab3."""
-        return [
-            {
-                "name": "example_analyzer",
-                "display_name": "Mock Analyzer (example)",
-                "version": "0.0.1",
-                "mock": True,
-                "input_kind": "stem",
-            }
-        ]
+        """List analyzer plugins available to Tab3 (from manifest + example fallback)."""
+        plugins: list[dict[str, Any]] = []
+        plugins.extend(self.pm.get_available_plugins(phase="post-separation"))
+        plugins.extend(self.pm.get_available_plugins(phase="pre-separation"))
+        existing = {p.get("name") for p in plugins}
+        if "example_analyzer" not in existing and self.pm.get("example_analyzer") is not None:
+            plugins.append(
+                {
+                    "name": "example_analyzer",
+                    "display_name": "Mock Analyzer (example)",
+                    "version": "0.0.1",
+                    "mock": True,
+                    "input_kind": "stem",
+                }
+            )
+        return plugins
 
 
 __all__ = ["Orchestrator", "make_progress_callback", "call_plugin_execute_async"]

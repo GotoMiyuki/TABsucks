@@ -1,0 +1,36 @@
+{
+  "plugin": "example_analyzer",
+  "version": "0.0.1",
+  "chords": [
+    {
+      "start": 0.0,
+      "end": 4.0,
+      "name": "C:maj",
+      "root": "C",
+      "quality": "maj"
+    },
+    {
+      "start": 4.0,
+      "end": 8.0,
+      "name": "A:min",
+      "root": "A",
+      "quality": "min"
+    },
+    {
+      "start": 8.0,
+      "end": 12.0,
+      "name": "F:maj",
+      "root": "F",
+      "quality": "maj"
+    },
+    {
+      "start": 12.0,
+      "end": 16.0,
+      "name": "G:maj",
+      "root": "G",
+      "quality": "maj"
+    }
+  ],
+  "sample_rate": 48000,
+  "mock": true
+}

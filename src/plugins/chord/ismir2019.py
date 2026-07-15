@@ -9,8 +9,8 @@ from typing import Dict, Any
 from src.plugins import BasePlugin
 from src.kernel.core.resource_controller import ResourceController
 
-# 指向外部仓库根目录
-EXTERNAL_DIR = os.path.join(os.path.dirname(__file__), "external", "ismir2019")
+# 指向外部仓库根目录 — 使用绝对路径避免 cwd 拼接问题
+EXTERNAL_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "external", "ismir2019"))
 CHORD_PY = os.path.join(EXTERNAL_DIR, "chord_recognition.py")
 
 class ISMIR2019ChordPlugin(BasePlugin):

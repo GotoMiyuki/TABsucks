@@ -1,0 +1,511 @@
+{
+  "WorkshopName": "パレード",
+  "LastTab": "Tab1",
+  "TabState": {
+    "Tab1": {
+      "RawAudioFilePath": "raw_audio\\パレード.mp3"
+    },
+    "Tab2": {
+      "SeparationState": "done",
+      "SeparationModelName": "separation_bs_roformer",
+      "SeparationModelPath": "C:\\Users\\99662\\Desktop\\TABsucks(Tab3)\\src\\plugins\\separation\\model_1",
+      "TrackAudioFilePath": {
+        "vocals": "track_audio\\track_vocals\\separation_bs_roformer_vocals.wav",
+        "drums": "track_audio\\track_drums\\separation_bs_roformer_drums.wav",
+        "bass": "track_audio\\track_bass\\separation_bs_roformer_bass.wav",
+        "piano": "track_audio\\track_piano\\separation_bs_roformer_piano.wav",
+        "guitar": "track_audio\\track_guitar\\separation_bs_roformer_guitar.wav",
+        "other": "track_audio\\track_other\\separation_bs_roformer_other.wav"
+      }
+    },
+    "Tab3": {
+      "vocals::dd3d317e": {
+        "AnalysisToolName": "chord_chordnet_2e1d",
+        "AnalysisState": "failed",
+        "AnalysisResultPath": null,
+        "AnalysisTaskId": "dd3d317e"
+      },
+      "drums::8c0e0602": {
+        "AnalysisToolName": "chord_chordnet_2e1d",
+        "AnalysisState": "failed",
+        "AnalysisResultPath": null,
+        "AnalysisTaskId": "8c0e0602"
+      },
+      "bass::87c64f11": {
+        "AnalysisToolName": "chord_chordnet_2e1d",
+        "AnalysisState": "failed",
+        "AnalysisResultPath": null,
+        "AnalysisTaskId": "87c64f11"
+      },
+      "piano::223c7581": {
+        "AnalysisToolName": "chord_chordnet_2e1d",
+        "AnalysisState": "failed",
+        "AnalysisResultPath": null,
+        "AnalysisTaskId": "223c7581"
+      },
+      "guitar::4d812861": {
+        "AnalysisToolName": "chord_chordnet_2e1d",
+        "AnalysisState": "failed",
+        "AnalysisResultPath": null,
+        "AnalysisTaskId": "4d812861"
+      },
+      "other::2795fe5a": {
+        "AnalysisToolName": "chord_chordnet_2e1d",
+        "AnalysisState": "failed",
+        "AnalysisResultPath": null,
+        "AnalysisTaskId": "2795fe5a"
+      },
+      "vocals::23217f84": {
+        "AnalysisToolName": "chord_chordnet_2e1d",
+        "AnalysisState": "failed",
+        "AnalysisResultPath": null,
+        "AnalysisTaskId": "23217f84"
+      },
+      "drums::e9bdb4e5": {
+        "AnalysisToolName": "rhythm_foundation",
+        "AnalysisState": "failed",
+        "AnalysisResultPath": null,
+        "AnalysisTaskId": "e9bdb4e5"
+      },
+      "bass::adf49fe6": {
+        "AnalysisToolName": "chord_bass_root",
+        "AnalysisState": "failed",
+        "AnalysisResultPath": "analysis_result\\chord_bass_root_result\\result_adf49fe6.json",
+        "AnalysisTaskId": "adf49fe6"
+      },
+      "piano::66d2ce8e": {
+        "AnalysisToolName": "chord_btc_sl",
+        "AnalysisState": "failed",
+        "AnalysisResultPath": null,
+        "AnalysisTaskId": "66d2ce8e"
+      },
+      "guitar::638cfd94": {
+        "AnalysisToolName": "chord_chordnet_2e1d",
+        "AnalysisState": "failed",
+        "AnalysisResultPath": null,
+        "AnalysisTaskId": "638cfd94"
+      },
+      "other::c6626b53": {
+        "AnalysisToolName": "chord_chordnet_2e1d",
+        "AnalysisState": "failed",
+        "AnalysisResultPath": null,
+        "AnalysisTaskId": "c6626b53"
+      },
+      "bass::1ce65cfe": {
+        "AnalysisToolName": "chord_btc_sl",
+        "AnalysisState": "failed",
+        "AnalysisResultPath": null,
+        "AnalysisTaskId": "1ce65cfe"
+      },
+      "vocals::bd185e1e": {
+        "AnalysisToolName": "chord_chordnet_2e1d",
+        "AnalysisState": "failed",
+        "AnalysisResultPath": null,
+        "AnalysisTaskId": "bd185e1e"
+      },
+      "drums::b86ce5c3": {
+        "AnalysisToolName": "rhythm_foundation",
+        "AnalysisState": "failed",
+        "AnalysisResultPath": null,
+        "AnalysisTaskId": "b86ce5c3"
+      },
+      "bass::eedbe27e": {
+        "AnalysisToolName": "chord_btc_sl",
+        "AnalysisState": "failed",
+        "AnalysisResultPath": null,
+        "AnalysisTaskId": "eedbe27e"
+      },
+      "piano::ba73bf47": {
+        "AnalysisToolName": "chord_btc_sl",
+        "AnalysisState": "failed",
+        "AnalysisResultPath": null,
+        "AnalysisTaskId": "ba73bf47"
+      },
+      "guitar::fec8cd3a": {
+        "AnalysisToolName": "chord_chordnet_2e1d",
+        "AnalysisState": "failed",
+        "AnalysisResultPath": null,
+        "AnalysisTaskId": "fec8cd3a"
+      },
+      "other::f7dc7614": {
+        "AnalysisToolName": "chord_chordnet_2e1d",
+        "AnalysisState": "failed",
+        "AnalysisResultPath": null,
+        "AnalysisTaskId": "f7dc7614"
+      },
+      "vocals::6a955a60": {
+        "AnalysisToolName": "chord_chordnet_2e1d",
+        "AnalysisState": "failed",
+        "AnalysisResultPath": null,
+        "AnalysisTaskId": "6a955a60"
+      },
+      "vocals::f6455ee9": {
+        "AnalysisToolName": "chord_chordnet_2e1d",
+        "AnalysisState": "failed",
+        "AnalysisResultPath": null,
+        "AnalysisTaskId": "f6455ee9"
+      },
+      "vocals::ecdb039d": {
+        "AnalysisToolName": "chord_chordnet_2e1d",
+        "AnalysisState": "failed",
+        "AnalysisResultPath": null,
+        "AnalysisTaskId": "ecdb039d"
+      },
+      "drums::5b0c0132": {
+        "AnalysisToolName": "chord_chordnet_2e1d",
+        "AnalysisState": "failed",
+        "AnalysisResultPath": null,
+        "AnalysisTaskId": "5b0c0132"
+      },
+      "piano::78bfc82e": {
+        "AnalysisToolName": "chord_chordnet_2e1d",
+        "AnalysisState": "failed",
+        "AnalysisResultPath": null,
+        "AnalysisTaskId": "78bfc82e"
+      },
+      "guitar::cfc2db1d": {
+        "AnalysisToolName": "chord_chordnet_2e1d",
+        "AnalysisState": "failed",
+        "AnalysisResultPath": null,
+        "AnalysisTaskId": "cfc2db1d"
+      },
+      "other::9a98f593": {
+        "AnalysisToolName": "chord_chordnet_2e1d",
+        "AnalysisState": "failed",
+        "AnalysisResultPath": null,
+        "AnalysisTaskId": "9a98f593"
+      },
+      "bass::1f7ad986": {
+        "AnalysisToolName": "chord_chordnet_2e1d",
+        "AnalysisState": "failed",
+        "AnalysisResultPath": null,
+        "AnalysisTaskId": "1f7ad986"
+      },
+      "vocals::3edcd61a": {
+        "AnalysisToolName": "chord_chordnet_2e1d",
+        "AnalysisState": "failed",
+        "AnalysisResultPath": null,
+        "AnalysisTaskId": "3edcd61a"
+      },
+      "vocals::e05d42c1": {
+        "AnalysisToolName": "chord_chordnet_2e1d",
+        "AnalysisState": "failed",
+        "AnalysisResultPath": null,
+        "AnalysisTaskId": "e05d42c1"
+      },
+      "vocals::67811158": {
+        "AnalysisToolName": "chord_chordnet_2e1d",
+        "AnalysisState": "failed",
+        "AnalysisResultPath": null,
+        "AnalysisTaskId": "67811158"
+      },
+      "drums::a651fee2": {
+        "AnalysisToolName": "rhythm_foundation",
+        "AnalysisState": "failed",
+        "AnalysisResultPath": null,
+        "AnalysisTaskId": "a651fee2"
+      },
+      "piano::f9ff4d81": {
+        "AnalysisToolName": "chord_chordnet_2e1d",
+        "AnalysisState": "failed",
+        "AnalysisResultPath": null,
+        "AnalysisTaskId": "f9ff4d81"
+      },
+      "guitar::9323ab5e": {
+        "AnalysisToolName": "chord_chordnet_2e1d",
+        "AnalysisState": "failed",
+        "AnalysisResultPath": null,
+        "AnalysisTaskId": "9323ab5e"
+      },
+      "other::95e98a3c": {
+        "AnalysisToolName": "chord_chordnet_2e1d",
+        "AnalysisState": "failed",
+        "AnalysisResultPath": null,
+        "AnalysisTaskId": "95e98a3c"
+      },
+      "vocals::04ac9b49": {
+        "AnalysisToolName": "chord_chordnet_2e1d",
+        "AnalysisState": "failed",
+        "AnalysisResultPath": null,
+        "AnalysisTaskId": "04ac9b49"
+      },
+      "vocals::623c451d": {
+        "AnalysisToolName": "chord_chordnet_2e1d",
+        "AnalysisState": "failed",
+        "AnalysisResultPath": null,
+        "AnalysisTaskId": "623c451d"
+      },
+      "vocals::85ec51cc": {
+        "AnalysisToolName": "chord_chordnet_2e1d",
+        "AnalysisState": "failed",
+        "AnalysisResultPath": null,
+        "AnalysisTaskId": "85ec51cc"
+      },
+      "vocals::ae2f122a": {
+        "AnalysisToolName": "chord_chordnet_2e1d",
+        "AnalysisState": "failed",
+        "AnalysisResultPath": null,
+        "AnalysisTaskId": "ae2f122a"
+      },
+      "drums::079a8752": {
+        "AnalysisToolName": "rhythm_foundation",
+        "AnalysisState": "failed",
+        "AnalysisResultPath": null,
+        "AnalysisTaskId": "079a8752"
+      },
+      "drums::3cb7e295": {
+        "AnalysisToolName": "rhythm_foundation",
+        "AnalysisState": "failed",
+        "AnalysisResultPath": null,
+        "AnalysisTaskId": "3cb7e295"
+      },
+      "bass::5d12b912": {
+        "AnalysisToolName": "chord_chordnet_2e1d",
+        "AnalysisState": "failed",
+        "AnalysisResultPath": null,
+        "AnalysisTaskId": "5d12b912"
+      },
+      "bass::bd13daea": {
+        "AnalysisToolName": "chord_chordnet_2e1d",
+        "AnalysisState": "failed",
+        "AnalysisResultPath": null,
+        "AnalysisTaskId": "bd13daea"
+      },
+      "vocals::20cb48ac": {
+        "AnalysisToolName": "chord_btc_sl",
+        "AnalysisState": "failed",
+        "AnalysisResultPath": null,
+        "AnalysisTaskId": "20cb48ac"
+      },
+      "vocals::db0fd7fa": {
+        "AnalysisToolName": "chord_ismir2019",
+        "AnalysisState": "failed",
+        "AnalysisResultPath": null,
+        "AnalysisTaskId": "db0fd7fa"
+      },
+      "vocals::075ff2f9": {
+        "AnalysisToolName": "chord_ismir2019",
+        "AnalysisState": "failed",
+        "AnalysisResultPath": null,
+        "AnalysisTaskId": "075ff2f9"
+      },
+      "vocals::f1180480": {
+        "AnalysisToolName": "example_analyzer",
+        "AnalysisState": "done",
+        "AnalysisResultPath": "analysis_result\\example_analyzer_result\\result_f1180480.json",
+        "AnalysisTaskId": "f1180480"
+      },
+      "drums::0e312f56": {
+        "AnalysisToolName": "rhythm_foundation",
+        "AnalysisState": "failed",
+        "AnalysisResultPath": null,
+        "AnalysisTaskId": "0e312f56"
+      },
+      "piano::dcfa52ce": {
+        "AnalysisToolName": "chord_chordnet_2e1d",
+        "AnalysisState": "done",
+        "AnalysisResultPath": "analysis_result\\chord_chordnet_2e1d_result\\result_dcfa52ce.json",
+        "AnalysisTaskId": "dcfa52ce"
+      },
+      "guitar::7d4d9a1e": {
+        "AnalysisToolName": "chord_chordnet_2e1d",
+        "AnalysisState": "done",
+        "AnalysisResultPath": "analysis_result\\chord_chordnet_2e1d_result\\result_7d4d9a1e.json",
+        "AnalysisTaskId": "7d4d9a1e"
+      },
+      "other::03a72948": {
+        "AnalysisToolName": "chord_chordnet_2e1d",
+        "AnalysisState": "failed",
+        "AnalysisResultPath": "analysis_result\\chord_chordnet_2e1d_result\\result_03a72948.json",
+        "AnalysisTaskId": "03a72948"
+      },
+      "drums::e0cbd46d": {
+        "AnalysisToolName": "rhythm_foundation",
+        "AnalysisState": "failed",
+        "AnalysisResultPath": null,
+        "AnalysisTaskId": "e0cbd46d"
+      },
+      "drums::e36166bb": {
+        "AnalysisToolName": "rhythm_foundation",
+        "AnalysisState": "failed",
+        "AnalysisResultPath": null,
+        "AnalysisTaskId": "e36166bb"
+      },
+      "drums::d7a456d5": {
+        "AnalysisToolName": "rhythm_foundation",
+        "AnalysisState": "failed",
+        "AnalysisResultPath": null,
+        "AnalysisTaskId": "d7a456d5"
+      },
+      "drums::a9b8a61f": {
+        "AnalysisToolName": "rhythm_foundation",
+        "AnalysisState": "failed",
+        "AnalysisResultPath": null,
+        "AnalysisTaskId": "a9b8a61f"
+      },
+      "drums::03fef66a": {
+        "AnalysisToolName": "rhythm_foundation",
+        "AnalysisState": "failed",
+        "AnalysisResultPath": null,
+        "AnalysisTaskId": "03fef66a"
+      },
+      "drums::1d984bf5": {
+        "AnalysisToolName": "rhythm_foundation",
+        "AnalysisState": "failed",
+        "AnalysisResultPath": null,
+        "AnalysisTaskId": "1d984bf5"
+      },
+      "drums::0a5a70a6": {
+        "AnalysisToolName": "chord_chordnet_2e1d",
+        "AnalysisState": "done",
+        "AnalysisResultPath": "analysis_result\\chord_chordnet_2e1d_result\\result_0a5a70a6.json",
+        "AnalysisTaskId": "0a5a70a6"
+      },
+      "drums::cd337013": {
+        "AnalysisToolName": "rhythm_foundation",
+        "AnalysisState": "done",
+        "AnalysisResultPath": "analysis_result\\rhythm_foundation_result\\result_cd337013.json",
+        "AnalysisTaskId": "cd337013"
+      },
+      "vocals::2a5aae9a": {
+        "AnalysisToolName": "chord_chordnet_2e1d",
+        "AnalysisState": "failed",
+        "AnalysisResultPath": "analysis_result\\chord_chordnet_2e1d_result\\result_2a5aae9a.json",
+        "AnalysisTaskId": "2a5aae9a"
+      },
+      "piano::c7a6ce42": {
+        "AnalysisToolName": "chord_btc_sl",
+        "AnalysisState": "failed",
+        "AnalysisResultPath": null,
+        "AnalysisTaskId": "c7a6ce42"
+      },
+      "guitar::34406827": {
+        "AnalysisToolName": "chord_ismir2019",
+        "AnalysisState": "done",
+        "AnalysisResultPath": "analysis_result\\chord_ismir2019_result\\result_34406827.json",
+        "AnalysisTaskId": "34406827"
+      },
+      "vocals::824cba7d": {
+        "AnalysisToolName": "chord_chordnet_2e1d",
+        "AnalysisState": "failed",
+        "AnalysisResultPath": null,
+        "AnalysisTaskId": "824cba7d"
+      },
+      "vocals::d1fa602b": {
+        "AnalysisToolName": "chord_chordnet_2e1d",
+        "AnalysisState": "failed",
+        "AnalysisResultPath": null,
+        "AnalysisTaskId": "d1fa602b"
+      },
+      "vocals::57609da8": {
+        "AnalysisToolName": "chord_chordnet_2e1d",
+        "AnalysisState": "failed",
+        "AnalysisResultPath": null,
+        "AnalysisTaskId": "57609da8"
+      },
+      "bass::53526fc8": {
+        "AnalysisToolName": "chord_bass_root",
+        "AnalysisState": "failed",
+        "AnalysisResultPath": null,
+        "AnalysisTaskId": "53526fc8"
+      },
+      "piano::2de08b56": {
+        "AnalysisToolName": "chord_btc_sl",
+        "AnalysisState": "failed",
+        "AnalysisResultPath": null,
+        "AnalysisTaskId": "2de08b56"
+      },
+      "other::1e77166f": {
+        "AnalysisToolName": "chord_chordnet_2e1d",
+        "AnalysisState": "failed",
+        "AnalysisResultPath": null,
+        "AnalysisTaskId": "1e77166f"
+      },
+      "vocals::8f28261c": {
+        "AnalysisToolName": "chord_ismir2019",
+        "AnalysisState": "done",
+        "AnalysisResultPath": "analysis_result\\chord_ismir2019_result\\result_8f28261c.json",
+        "AnalysisTaskId": "8f28261c"
+      },
+      "bass::268aa63d": {
+        "AnalysisToolName": "chord_ismir2019",
+        "AnalysisState": "done",
+        "AnalysisResultPath": "analysis_result\\chord_ismir2019_result\\result_268aa63d.json",
+        "AnalysisTaskId": "268aa63d"
+      },
+      "piano::08958e75": {
+        "AnalysisToolName": "chord_ismir2019",
+        "AnalysisState": "done",
+        "AnalysisResultPath": "analysis_result\\chord_ismir2019_result\\result_08958e75.json",
+        "AnalysisTaskId": "08958e75"
+      },
+      "other::3be3eb1a": {
+        "AnalysisToolName": "chord_bass_root",
+        "AnalysisState": "failed",
+        "AnalysisResultPath": null,
+        "AnalysisTaskId": "3be3eb1a"
+      },
+      "other::706201b8": {
+        "AnalysisToolName": "chord_ismir2019",
+        "AnalysisState": "done",
+        "AnalysisResultPath": "analysis_result\\chord_ismir2019_result\\result_706201b8.json",
+        "AnalysisTaskId": "706201b8"
+      },
+      "vocals::5f06728a": {
+        "AnalysisToolName": "chord_btc_sl",
+        "AnalysisState": "done",
+        "AnalysisResultPath": "analysis_result\\chord_btc_sl_result\\result_5f06728a.json",
+        "AnalysisTaskId": "5f06728a"
+      },
+      "bass::aa57a495": {
+        "AnalysisToolName": "chord_bass_root",
+        "AnalysisState": "failed",
+        "AnalysisResultPath": null,
+        "AnalysisTaskId": "aa57a495"
+      },
+      "piano::a147b464": {
+        "AnalysisToolName": "chord_btc_sl",
+        "AnalysisState": "done",
+        "AnalysisResultPath": "analysis_result\\chord_btc_sl_result\\result_a147b464.json",
+        "AnalysisTaskId": "a147b464"
+      },
+      "guitar::5fa5f0c4": {
+        "AnalysisToolName": "chord_btc_sl",
+        "AnalysisState": "done",
+        "AnalysisResultPath": "analysis_result\\chord_btc_sl_result\\result_5fa5f0c4.json",
+        "AnalysisTaskId": "5fa5f0c4"
+      },
+      "other::aa7fa6a9": {
+        "AnalysisToolName": "chord_btc_sl",
+        "AnalysisState": "done",
+        "AnalysisResultPath": "analysis_result\\chord_btc_sl_result\\result_aa7fa6a9.json",
+        "AnalysisTaskId": "aa7fa6a9"
+      },
+      "bass::c094bf6a": {
+        "AnalysisToolName": "chord_bass_root",
+        "AnalysisState": "failed",
+        "AnalysisResultPath": null,
+        "AnalysisTaskId": "c094bf6a"
+      },
+      "bass::1310664b": {
+        "AnalysisToolName": "chord_bass_root",
+        "AnalysisState": "failed",
+        "AnalysisResultPath": null,
+        "AnalysisTaskId": "1310664b"
+      },
+      "drums::75cdd740": {
+        "AnalysisToolName": "chord_btc_sl",
+        "AnalysisState": "done",
+        "AnalysisResultPath": "analysis_result\\chord_btc_sl_result\\result_75cdd740.json",
+        "AnalysisTaskId": "75cdd740"
+      },
+      "bass::a5528387": {
+        "AnalysisToolName": "chord_bass_root",
+        "AnalysisState": "done",
+        "AnalysisResultPath": "analysis_result\\chord_bass_root_result\\result_a5528387.json",
+        "AnalysisTaskId": "a5528387"
+      }
+    },
+    "Tab4": {}
+  }
+}

@@ -101,6 +101,10 @@ def _extract_cqt_features(audio: np.ndarray, sr: int) -> np.ndarray:
     """
     import librosa
 
+    if sr != 22050:
+        audio = librosa.resample(audio.astype(np.float64), orig_sr=sr, target_sr=22050).astype(np.float32)
+        sr = 22050
+
     cqt = librosa.cqt(
         audio,
         sr=sr,
@@ -153,12 +157,10 @@ class BTCSLChordPlugin(BasePlugin):
     默认加载 ChordMini CL 训练的 ``btc_model_best.pth``。
     """
 
-    # 默认 checkpoint 优先级：CL 训练版 > 原始 Teacher
+    # 默认 checkpoint 优先级：原始 Teacher（已验证可用）> CL 训练版（epoch 2 欠训练，待更多轮次后启用）
     _DEFAULT_CHECKPOINT_CANDIDATES = [
+        os.path.join(_CHECKPOINTS_DIR, "btc_model_large_voca.pt"),
         os.path.join(_CHECKPOINTS_DIR, "btc_model_best.pth"),
-        os.path.join(
-            os.path.dirname(__file__), "..", "..", "..", "pretrained", "btc_model_large_voca.pt"
-        ),
     ]
 
     @property
@@ -174,8 +176,10 @@ class BTCSLChordPlugin(BasePlugin):
         audio = rc.get_buffer(stem_name)
         sr = rc.get_metadata("sample_rate") or 22050
 
-        # 1. CQT 特征提取（不归一化，由推理流水线内部处理）
+        # 1. CQT 特征提取（重采样到 22050，不归一化，由推理流水线内部处理）
         features = _extract_cqt_features(audio, sr)
+        # CQT 使用 22050 Hz；修正 sr 以保证 _run_length_encode 时间戳正确
+        cqt_sr = 22050
 
         # 2. 加载模型
         checkpoint_path = kwargs.get("checkpoint")
@@ -196,7 +200,7 @@ class BTCSLChordPlugin(BasePlugin):
         )
 
         # 4. 帧级预测 → 和弦段
-        chords = _run_length_encode(predictions, hop_length=2048, sr=sr)
+        chords = _run_length_encode(predictions, hop_length=2048, sr=cqt_sr)
 
         rc.set_metadata(f"chord_raw_{stem_name}", chords)
         return {"status": "success", "stem": stem_name, "data": chords}

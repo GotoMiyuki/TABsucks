@@ -60,7 +60,7 @@ def chordlab_to_ismir2017_array(chordlab_est,chordlab_ref,sr=DEFAULT_SR,hop_leng
     n_frames=min(
         int(np.round(chordlab_ref[-1][1]*sr/hop_length)),
         int(np.round(chordlab_est[-1][1]*sr/hop_length)))
-    arr_est=np.zeros((n_frames,),dtype=np.int)
+    arr_est=np.zeros((n_frames,),dtype=int)
     for token in chordlab_est:
         start=max(0,int(np.round(token[0]*sr/hop_length)))
         end=min(n_frames,int(np.round(token[1]*sr/hop_length)))

@@ -13,11 +13,9 @@
 
 from __future__ import annotations
 
-import io
 import json
 import math
 import random
-import struct
 from pathlib import Path
 
 from fastapi import APIRouter, File, HTTPException, Request, UploadFile
@@ -260,26 +258,146 @@ async def trigger_analysis(
 def get_visualization(
     wid: str, track: str = "full", request: Request = None  # type: ignore[assignment]
 ) -> dict:
-    """[MOCK] 替换点 C：接入 ``export_visualization_json()`` 真实数据。"""
+    """返回可视化 JSON（波形 + 节拍 + 和弦），优先读真实分析结果。"""
     kernel = _kernel(request)
-    if kernel.manager.get(wid) is None:
+    ws = kernel.manager.get(wid) if kernel.manager else None
+    if ws is None:
         _err(404, f"车间 {wid} 不存在")
-    if track == "full":
-        demo = MOCK_DATA_DIR / "demo.json"
-        if demo.exists():
-            with demo.open(encoding="utf-8") as f:
-                return json.load(f)
+
+    # 1. 波形：从 raw audio 计算
+    waveform_data = _build_waveform(ws)
+
+    # 2. 节拍 / 和弦：从 Tab3 分析结果读取
+    beat_data = None
+    chord_data = None
+    duration = waveform_data.get("duration", 30.0)
+
+    tab3 = ws.state.tab_state.tab3
+    if tab3:
+        beat_data, chord_data = _extract_visualization_from_tab3(ws, track, duration)
+
     return {
-        "waveform": _mock_waveform(track),
-        "beats": _mock_beats(),
-        "chords": _mock_chords(),
+        "waveform": waveform_data,
+        "beats": beat_data or _mock_beats(duration),
+        "chords": chord_data or _mock_chords(duration),
         "metadata": {
-            "duration": 30.0,
-            "sampleRate": 44100,
-            "hasBeatData": True,
-            "hasChordData": True,
+            "duration": duration,
+            "sampleRate": waveform_data.get("sampleRate", 44100),
+            "hasBeatData": beat_data is not None,
+            "hasChordData": chord_data is not None,
         },
     }
+
+
+def _build_waveform(ws) -> dict:
+    """从 raw audio 计算波形峰值数据。"""
+    try:
+        raw_path = ws.get_raw_audio_path()
+        if raw_path is None or not raw_path.is_file():
+            raise FileNotFoundError
+        from src.audio.loader import load_audio_multi_channel
+
+        audio = load_audio_multi_channel(raw_path)
+        from src.visualizer.waveform import compute_waveform
+
+        wf = compute_waveform(audio, num_frames=2000)
+        return wf.to_dict()
+    except Exception:  # noqa: BLE001
+        return _mock_waveform("full")
+
+
+def _extract_visualization_from_tab3(ws, track: str, duration: float) -> tuple:
+    """从 Tab3 分析结果中提取节拍和和弦数据。
+
+    Returns:
+        ``(beat_data | None, chord_data | None)``
+    """
+    beat_data = None
+    chord_data = None
+
+    for key, task_state in ws.state.tab_state.tab3.items():
+        if task_state.analysis_state != "done":
+            continue
+        if task_state.analysis_result_path is None:
+            continue
+
+        track_name, _ = key.split("::", 1) if "::" in key else (key, "")
+        if track != "full" and track_name != track:
+            continue
+
+        try:
+            abs_path = ws.cache.to_absolute(task_state.analysis_result_path)
+        except ValueError:
+            continue
+
+        if not abs_path.is_file():
+            continue
+
+        try:
+            import json as _json
+
+            raw = _json.loads(abs_path.read_text(encoding="utf-8"))
+        except (OSError, _json.JSONDecodeError):
+            continue
+
+        tool = task_state.analysis_tool_name or ""
+
+        # 节奏分析结果
+        if "rhythm" in tool and beat_data is None:
+            beat_data = _build_beats_from_result(raw, duration)
+
+        # 和弦分析结果
+        if ("chord" in tool or "chord" in key) and chord_data is None:
+            chord_data = _build_chords_from_result(raw, duration)
+
+        if beat_data is not None and chord_data is not None:
+            break
+
+    return beat_data, chord_data
+
+
+def _build_beats_from_result(raw: dict, duration: float) -> list[dict] | None:
+    """从分析结果中提取节拍数据。"""
+    bpm = raw.get("bpm") or raw.get("global_bpm")
+    if not bpm:
+        return None
+    interval = 60.0 / float(bpm)
+    beats, t, n = [], 0.0, 1
+    while t < duration:
+        beats.append({
+            "time": round(t, 4),
+            "measure": (n - 1) // 4 + 1,
+            "beatInMeasure": (n - 1) % 4 + 1,
+            "isDownbeat": (n - 1) % 4 == 0,
+            "timeProportion": round(t / duration, 6),
+        })
+        t += interval
+        n += 1
+    return beats
+
+
+def _build_chords_from_result(raw: dict, duration: float) -> list[dict] | None:
+    """从分析结果中提取和弦数据。"""
+    chords = raw.get("chords") or raw.get("chord_labels")
+    if not isinstance(chords, list) or not chords:
+        return None
+    result = []
+    for c in chords:
+        if not isinstance(c, dict):
+            continue
+        start = float(c.get("start", 0))
+        end = float(c.get("end", 0))
+        result.append({
+            "start": round(start, 4),
+            "end": round(end, 4),
+            "duration": round(end - start, 4),
+            "name": c.get("name", c.get("chord", "?")),
+            "root": c.get("root", ""),
+            "quality": c.get("quality", ""),
+            "startProportion": round(start / duration, 6) if duration > 0 else 0,
+            "durationProportion": round((end - start) / duration, 6) if duration > 0 else 0,
+        })
+    return result or None
 
 
 # ---------------------------------------------------------------------------
@@ -290,11 +408,28 @@ def get_visualization(
 @router.get("/workshops/{wid}/audio/{track}")
 def get_audio(wid: str, track: str, request: Request = None  # type: ignore[assignment]
 ) -> StreamingResponse:
-    """[MOCK] 替换点 D：返回 ``cache/workshop_<wid>/track_audio/track_<name>/<file>`` 的真实 wav。"""
-    _ = wid  # 防止 unused warning
-    wav = _generate_test_wav(track)
+    """返回 ``cache/workshop_<wid>/track_audio/track_<name>/<file>`` 的真实 wav。"""
+    kernel = _kernel(request)
+    ws = kernel.manager.get(wid) if kernel.manager else None
+    if ws is None:
+        _err(404, f"车间 {wid} 不存在")
+
+    track_paths = ws.get_track_audio_paths()
+    abs_path = track_paths.get(track)
+    if abs_path is None or not abs_path.is_file():
+        # Fallback: serve raw audio if separation not done
+        raw = ws.get_raw_audio_path()
+        if raw and raw.is_file():
+            abs_path = raw
+        else:
+            _err(404, f"音轨 {track} 不存在")
+
+    def file_stream():
+        with open(abs_path, "rb") as f:
+            yield from f
+
     return StreamingResponse(
-        io.BytesIO(wav),
+        file_stream(),
         media_type="audio/wav",
         headers={"Content-Disposition": f'inline; filename="{track}.wav"'},
     )
@@ -379,50 +514,6 @@ def _mock_chords(duration: float = 30.0) -> list[dict]:
         }
         for i, (r, q) in enumerate(prog)
     ]
-
-
-def _mock_analysis_result(track: str) -> dict:
-    return {
-        "status": "success",
-        "track": track,
-        "plugin": "chord_ismir2019",
-        "chords": _mock_chords(),
-        "bpm": 120.0,
-        "timeSignature": "4/4",
-        "key": "C",
-        "mode": "major",
-        "confidence": 0.92,
-    }
-
-
-def _generate_test_wav(track: str = "other", duration: float = 5.0) -> bytes:
-    import numpy as np
-
-    sr = 44100
-    freq = {
-        "vocals": 440,
-        "drums": 100,
-        "bass": 80,
-        "piano": 523,
-        "guitar": 330,
-    }.get(track, 660)
-    n = int(sr * duration)
-    samples = (
-        0.5
-        * np.sin(
-            2 * np.pi * freq * np.linspace(0, duration, n)
-        )
-    ).astype(np.float32)
-    buf = io.BytesIO()
-    data_size = n * 4  # 32-bit mono
-    buf.write(b"RIFF")
-    buf.write(struct.pack("<I", 36 + data_size))
-    buf.write(b"WAVEfmt ")
-    buf.write(struct.pack("<IHHIIHH", 16, 1, 1, sr, sr * 4, 4, 32))
-    buf.write(b"data")
-    buf.write(struct.pack("<I", data_size))
-    buf.write(samples.tobytes())
-    return buf.getvalue()
 
 
 __all__ = ["router"]

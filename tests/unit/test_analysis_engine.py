@@ -121,7 +121,7 @@ def _setup_engine(
         for stem in ["vocals", "drums", "bass", "piano", "guitar", "other"]:
             rc.set_buffer(stem, np.zeros(44100))
 
-    pm = PluginManager(rc)
+    pm = PluginManager(rc, auto_discover=False)
     if rhythm_plugin:
         pm.register(rhythm_plugin)
     if chord_plugin:
@@ -249,7 +249,7 @@ class TestAnalysisEngineRun:
 
     def test_missing_raw_buffer_raises(self) -> None:
         rc = ResourceController()
-        pm = PluginManager(rc)
+        pm = PluginManager(rc, auto_discover=False)
         engine = AnalysisEngine(rc, pm)
 
         with pytest.raises(AnalysisEngineError):
