@@ -70,10 +70,11 @@ const api = {
 
     /** 永久删除（内存 + 磁盘）。默认 keep_state=false。 */
     async deleteWorkshop(wid, { keepState = false } = {}) {
-        return this._fetchJSON(`${this._baseURL}/workshops/${wid}`, {
+        const query = new URLSearchParams({
+            keep_state: String(keepState),
+        });
+        return this._fetchJSON(`${this._baseURL}/workshops/${wid}?${query}`, {
             method: 'DELETE',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ keep_state: keepState }),
         });
     },
 
@@ -133,6 +134,12 @@ const api = {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ track, plugin }),
         });
+    },
+
+    async getAnalysisResults(wid) {
+        return this._fetchJSON(
+            `${this._baseURL}/workshops/${wid}/analysis-results`
+        );
     },
 
     async getVisualization(wid, track = 'full') {

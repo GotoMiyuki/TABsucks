@@ -39,6 +39,25 @@ _predict_sliding_windows = None
 _extract_state_dict_and_stats = None
 
 
+class _ProgressReportingModel(torch.nn.Module):
+    """Delegate model calls while reporting completed inference batches."""
+
+    def __init__(self, model, total_batches: int, progress_callback) -> None:
+        super().__init__()
+        self.module = model
+        self._total_batches = max(1, int(total_batches))
+        self._completed_batches = 0
+        self._progress_callback = progress_callback
+
+    def forward(self, *args, **kwargs):
+        result = self.module(*args, **kwargs)
+        self._completed_batches += 1
+        self._progress_callback(
+            min(1.0, self._completed_batches / self._total_batches)
+        )
+        return result
+
+
 def _ensure_imports():
     global _ChordNet_cls, _get_chordnet_config
     global _predict_sliding_windows, _extract_state_dict_and_stats
@@ -75,6 +94,7 @@ class ChordNet2E1DPlugin(BasePlugin):
     """
 
     _DEFAULT_CHECKPOINT = os.path.join(_CHECKPOINTS_DIR, "2e1d_model_best.pth")
+    reports_progress = True
 
     @property
     def name(self) -> str:
@@ -86,19 +106,35 @@ class ChordNet2E1DPlugin(BasePlugin):
 
     def execute(self, rc: ResourceController, **kwargs) -> dict[str, Any]:
         stem_name = kwargs.get("stem_name", "piano")
+        progress_callback = kwargs.get("progress_callback")
+
+        def report(progress: float) -> None:
+            if progress_callback is not None:
+                progress_callback(progress)
+
+        report(0.02)
         audio = rc.get_buffer(stem_name)
         sr = rc.get_metadata("sample_rate") or 22050
 
         # 1. CQT 特征提取（重采样到 22050，不归一化，由推理流水线内部处理）
+        report(0.05)
         features = _extract_cqt_features(audio, sr)
+        report(0.25)
         cqt_sr = 22050
 
         # 2. 加载模型
         checkpoint_path = kwargs.get("checkpoint")
+        report(0.28)
         model, mean, std = self._init_model(rc, checkpoint_path=checkpoint_path)
+        report(0.35)
 
         # 3. 高级推理流水线
         device = rc.get_current_device() if hasattr(rc, "get_current_device") else "cpu"
+
+        def report_inference(progress: float) -> None:
+            bounded = max(0.0, min(float(progress), 1.0))
+            report(0.35 + 0.60 * bounded)
+
         predictions = self._run_inference(
             model, features, device, mean, std,
             seq_len=kwargs.get("seq_len", 108),
@@ -108,12 +144,15 @@ class ChordNet2E1DPlugin(BasePlugin):
             smooth_predictions=kwargs.get("smooth_predictions", True),
             kernel_size=kwargs.get("smooth_kernel", 9),
             use_gaussian=kwargs.get("use_gaussian", True),
+            progress_callback=report_inference,
         )
 
         # 4. 帧级预测 → 和弦段
+        report(0.97)
         chords = _run_length_encode(predictions, hop_length=2048, sr=cqt_sr)
 
         rc.set_metadata(f"chord_raw_{stem_name}", chords)
+        report(0.99)
         return {"status": "success", "stem": stem_name, "data": chords}
 
     def _init_model(self, rc: ResourceController, checkpoint_path: str | None = None):
@@ -247,10 +286,43 @@ class ChordNet2E1DPlugin(BasePlugin):
         smooth_predictions: bool = True,
         kernel_size: int = 9,
         use_gaussian: bool = True,
+        progress_callback=None,
     ) -> np.ndarray:
         """使用 ChordMini 的高级推理流水线：滑动窗口 + 重叠投票 + 时序平滑。"""
+        inference_model = model
+        if progress_callback is not None and features.size > 0:
+            original_frames = int(features.shape[0])
+            seq_len = max(1, int(seq_len))
+            remainder = original_frames % seq_len
+            padded_frames = original_frames + (
+                0 if remainder == 0 else seq_len - remainder
+            )
+            effective_overlap = (
+                max(0.0, min(float(overlap_ratio), 0.99))
+                if use_overlap
+                else 0.0
+            )
+            stride = (
+                max(1, int(seq_len * (1.0 - effective_overlap)))
+                if effective_overlap > 0
+                else seq_len
+            )
+            window_count = max(
+                1,
+                ((padded_frames - seq_len) // stride) + 1,
+            )
+            total_batches = max(
+                1,
+                (window_count + batch_size - 1) // batch_size,
+            )
+            inference_model = _ProgressReportingModel(
+                model,
+                total_batches,
+                progress_callback,
+            )
+
         predictions = _predict_sliding_windows(
-            model=model,
+            model=inference_model,
             feature_matrix=features,
             mean=mean,
             std=std,

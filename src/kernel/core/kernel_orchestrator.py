@@ -91,7 +91,7 @@ async def call_plugin_execute_async(
         return plugin.execute(rc, **kwargs)
 
     future = loop.run_in_executor(None, sync_run)
-    if progress_callback is None:
+    if progress_callback is None or bool(getattr(plugin, "reports_progress", False)):
         return await future
 
     heartbeat_interval = max(float(progress_interval_sec), 0.05)
@@ -261,6 +261,7 @@ class Orchestrator:
         stem_name: str = "vocals",
         progress_event: str = "analysis_progress",
         durations_sec: float = 1.5,
+        emit_done_event: bool = True,
     ) -> asyncio.Task:
         """Start an analyzer plugin task and emit lifecycle/progress events."""
 
@@ -300,15 +301,19 @@ class Orchestrator:
                     progress_callback=cb,
                     stem_name=stem_name,
                 )
-                bus.emit(
-                    wid,
-                    "analysis_done",
-                    {
-                        "plugin": plugin_name,
-                        "track": stem_name,
-                        "result": result.get("data", {}),
-                    },
-                )
+                if emit_done_event:
+                    result_data = result.get("data", {})
+                    if isinstance(result_data, list):
+                        result_data = {"chords": result_data}
+                    bus.emit(
+                        wid,
+                        "analysis_done",
+                        {
+                            "plugin": plugin_name,
+                            "track": stem_name,
+                            "result": result_data,
+                        },
+                    )
                 return result
             except Exception as e:  # noqa: BLE001
                 bus.emit(

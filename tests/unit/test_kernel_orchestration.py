@@ -149,6 +149,31 @@ class TestStartSeparation:
         assert result["status"] == "success"
         assert any(0.0 < p < 1.0 for p in progress)
 
+    def test_sync_plugin_with_native_progress_does_not_get_heartbeat(self) -> None:
+        class NativeProgressPlugin:
+            reports_progress = True
+
+            def execute(self, rc, **kwargs):
+                kwargs["progress_callback"](0.25)
+                time.sleep(0.16)
+                return {"status": "success", "data": {}}
+
+        progress: list[float] = []
+
+        async def runner():
+            return await call_plugin_execute_async(
+                NativeProgressPlugin(),
+                rc=None,
+                progress_interval_sec=0.05,
+                durations_sec=0.0,
+                progress_callback=progress.append,
+            )
+
+        result = asyncio.run(runner())
+
+        assert result["status"] == "success"
+        assert progress == [0.25]
+
 
 class TestStartAnalysis:
     def test_emits_done_with_chords(self) -> None:
@@ -174,6 +199,31 @@ class TestStartAnalysis:
         assert done.payload["track"] == "vocals"
         chords = done.payload["result"].get("chords", [])
         assert len(chords) == 4
+
+    def test_can_defer_done_event_to_kernel_finalize(self) -> None:
+        bus = EventBus()
+        orch = Orchestrator()
+        orch.rc.set_buffer("vocals", np.zeros(22050, dtype=np.float32))
+        orch.rc.set_metadata("sample_rate", 22050)
+        sub_q = bus.subscribe()
+
+        async def runner():
+            await orch.start_analysis(
+                "wid_analyze",
+                bus,
+                plugin_name="example_analyzer",
+                stem_name="vocals",
+                durations_sec=0.0,
+                emit_done_event=False,
+            )
+
+        asyncio.run(runner())
+        events = []
+        while not sub_q.empty():
+            events.append(sub_q.get_nowait())
+
+        assert any(event.type == "analysis_started" for event in events)
+        assert not any(event.type == "analysis_done" for event in events)
 
 
 def _drain_queue_until_terminal(

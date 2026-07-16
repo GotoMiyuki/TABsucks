@@ -578,6 +578,7 @@ class Kernel:
             plugin_name=plugin_name,
             stem_name=stem_name,
             durations_sec=durations_sec,
+            emit_done_event=False,
         )
         return asyncio.create_task(
             self._finalize_analysis_task(wid, stem_name, task_id, plugin_name, inner_task)
@@ -616,7 +617,12 @@ class Kernel:
                 plugin_name, task_id, result_data, ext="json"
             )
             rel = ws.cache.to_relative(abs_path)
-            ws.complete_analysis(stem_name, task_id, rel)
+            ws.complete_analysis(
+                stem_name,
+                task_id,
+                rel,
+                result=result_data,
+            )
             return result
         except Exception as e:  # noqa: BLE001
             ws.fail_analysis(stem_name, task_id, str(e))

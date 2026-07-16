@@ -249,6 +249,39 @@ async def trigger_analysis(
     return {"ok": True, "task": req.plugin}
 
 
+@router.get("/workshops/{wid}/analysis-results")
+def get_analysis_results(wid: str, request: Request) -> dict:
+    """Return the latest persisted analysis result for each track."""
+    kernel = _kernel(request)
+    ws = kernel.manager.get(wid)
+    if ws is None:
+        _err(404, f"Workshop {wid} not found")
+
+    results: dict[str, dict] = {}
+    for key, task_state in ws.state.tab_state.tab3.items():
+        if (
+            task_state.analysis_state != "done"
+            or task_state.analysis_result_path is None
+        ):
+            continue
+
+        track_name = key.split("::", 1)[0]
+        try:
+            result_path = ws.cache.to_absolute(
+                task_state.analysis_result_path
+            )
+            result_data = json.loads(result_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, json.JSONDecodeError):
+            continue
+
+        if isinstance(result_data, list):
+            result_data = {"chords": result_data}
+        if isinstance(result_data, dict):
+            results[track_name] = result_data
+
+    return {"ok": True, "results": results}
+
+
 # ---------------------------------------------------------------------------
 # 可视化（**MOCK**，替换点 C）
 # ---------------------------------------------------------------------------

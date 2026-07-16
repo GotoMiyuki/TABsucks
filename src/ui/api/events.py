@@ -20,6 +20,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from queue import Empty, Queue
 from typing import Any
@@ -56,7 +57,8 @@ async def events(request: Request) -> StreamingResponse:
                     break
                 # 非阻塞 poll，~ 0.3 秒超时，让 is_disconnected 及时检查
                 try:
-                    ev = q.get(timeout=0.3)
+                    # Keep the blocking Queue wait off the ASGI event loop.
+                    ev = await asyncio.to_thread(q.get, True, 0.3)
                 except Empty:
                     continue
                 frame = json.dumps(
@@ -84,5 +86,4 @@ async def events(request: Request) -> StreamingResponse:
     )
 
 
-# Keep asyncio import here even if unused locally (for type comments / future)
 __all__ = ["router"]  # noqa: F401

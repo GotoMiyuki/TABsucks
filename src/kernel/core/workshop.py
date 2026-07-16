@@ -707,6 +707,8 @@ class MusicWorkshop:
         track_name: str,
         task_id: str,
         result_path_rel: str,
+        *,
+        result: dict[str, Any] | None = None,
     ) -> None:
         """分析完成：写入 result 路径（**相对** workshop_dir） + 标 done + emit。
 
@@ -725,14 +727,14 @@ class MusicWorkshop:
             self._state.tab_state.tab3[key].analysis_result_path = result_path_rel
             self._mark_dirty()
             self.save()
-            self._emit(
-                "analysis_done",
-                {
-                    "track": track_name,
-                    "task_id": task_id,
-                    "result_path": result_path_rel,
-                },
-            )
+            payload: dict[str, Any] = {
+                "track": track_name,
+                "task_id": task_id,
+                "result_path": result_path_rel,
+            }
+            if result is not None:
+                payload["result"] = result
+            self._emit("analysis_done", payload)
 
     def fail_analysis(self, track_name: str, task_id: str, error: str) -> None:
         """分析失败：标 failed + emit。"""

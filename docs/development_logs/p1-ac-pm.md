@@ -1560,3 +1560,330 @@ TestKernel.test_start_separation_records_manifest_model_path
 ```text
 E:\raungong\tb\TABsucks\src\plugins\separation\model_1
 ```
+
+时间7.16，合并了enhancement/tab3分支
+
+## 2026-07-16：永久删除车间的 UI 反馈修复
+
+### 现象
+
+点击“永久删除当前车间”后，界面看起来没有响应。
+
+### 定位结果
+
+- 删除按钮已经正确绑定点击事件。
+- 浏览器会正确发送 `DELETE /api/workshops/{wid}`。
+- 后端能够停止 autosave、清理内存、删除车间缓存目录并返回
+  `{"ok": true}`。
+- 删除过程需要等待 autosave 和文件系统清理，实际可能超过两秒；原 UI
+  在等待期间没有删除提示，因此表现得像点击无效。
+
+### 修改
+
+- `src/ui/static/js/api.js`
+  - 按 HTTP 接口约定，通过查询参数传递 `keep_state`。
+- `src/ui/static/js/app.js`
+  - 请求开始前立即显示“正在永久删除车间”。
+  - 使用 `try/finally`，确保异常或成功后都能恢复 busy 和 disabled 状态。
+  - 删除成功后刷新车间列表、切回欢迎页并显示成功提示。
+
+### 验证
+
+- `node --check src/ui/static/js/app.js` 通过。
+
+## 2026-07-16：分离插件临时 WAV 泄漏修复
+
+### 现象
+
+完成音轨分离并永久删除车间后，Windows 系统临时目录
+`C:\Users\goneday\AppData\Local\Temp` 中仍会残留一组分离结果 WAV，例如
+`tmp*_(vocals)_BS-Roformer-SW.wav`。一次六轨分离会留下 6 个较大的临时文件。
+
+### 根因
+
+- 正式分离插件把 `audio-separator` 的输出目录配置为系统 Temp。
+- 插件使用 `NamedTemporaryFile(delete=False)` 创建临时输入 WAV。
+- 模型返回六个输出 WAV 后，插件会将它们读回 NumPy 内存，但原来的 `finally`
+  只删除临时输入，没有删除输出文件。
+- 车间删除只负责删除 `cache/workshop_<id>`。系统 Temp 文件名不包含车间 ID，
+  车间管理器没有可靠的文件归属信息，不能安全地扫描并删除这些文件。
+
+### 修改
+
+- `src/plugins/separation/model_1/separator.py`
+  - 记录本次 `audio-separator.separate()` 返回的输出路径。
+  - 仅接受解析后位于当前引擎 `output_dir` 直属目录下的路径，避免误删其他目录文件。
+  - 在结果已经读入内存后，由 `finally` 同时删除临时输入和本次输出 WAV。
+  - 每个文件独立清理；删除失败时输出告警，不覆盖原始推理或读取异常。
+- `src/plugins/separation/separator_old_type.py`
+  - 同步相同的临时文件清理规则，避免旧入口继续泄漏。
+- `tests/unit/test_separation_plugin.py`
+  - 使用轻量假引擎生成六轨 WAV，不加载真实模型。
+  - 验证分离结果返回后，本次临时输入和六个输出 WAV 均不存在。
+  - 验证输出 WAV 读取失败时，异常路径仍会清理临时输入和已生成输出。
+
+### 设计说明
+
+清理放在分离插件的资源所有权边界，而不是车间删除阶段。这样正常完成、读取异常、
+重复分离或用户从不删除车间时都不会继续积累临时文件，并且不会通过通配符误删其他
+进程正在使用的 Temp WAV。
+
+本次没有自动删除修复前已经遗留在系统 Temp 中的历史 WAV。
+
+### 验证
+
+修复前回归测试稳定失败：
+
+```text
+FAILED tests/unit/test_separation_plugin.py::test_separate_removes_invocation_temp_wavs
+```
+
+修复后：
+
+```powershell
+D:\anaconda\envs\pyq\python.exe -m pytest `
+  tests\unit\test_separation_plugin.py -q -p no:cacheprovider
+```
+
+结果：临时文件清理与 manifest 插件加载相关测试共 `3 passed`。
+
+以下文件通过 `py_compile`：
+
+- `src/plugins/separation/model_1/separator.py`
+- `src/plugins/separation/separator_old_type.py`
+- `tests/unit/test_separation_plugin.py`
+
+`git diff --check` 通过。
+
+## 2026-07-16：新建车间状态串用与前端模块缓存修复
+
+### 现象
+
+- 已打开一个车间后点击新建，侧边栏会出现新车间，但主界面仍显示上一个车间的数据。
+- 删除后再次新建仍可能显示旧数据，只有重启 UI 才恢复。
+- 重启后打开历史车间可能提示
+  `加载车间失败: api.getAnalysisResults is not a function`。
+
+### 根因
+
+- `handleNewWorkshop()` 先设置 `state.busy = true`，随后调用
+  `handleSwitchWorkshop(newWid)`。
+- `handleSwitchWorkshop()` 遇到 busy 会立即返回，因此后端已经创建并激活新车间，
+  前端却没有更新 `currentWid`，也没有清理上一个车间的分析结果和界面状态。
+- `index.html` 长期使用固定的旧资源版本 `v=20260712g`，静态文件响应也没有
+  no-cache/no-store 约束。浏览器可能加载新版 `app.js` 与旧版 `api.js`，
+  从而出现新方法不存在的模块版本混搭。
+
+### 修改
+
+- `src/ui/static/js/app.js`
+  - 抽出 `activateWorkshopUi()`，统一负责前端激活和恢复。
+  - 新建接口已在后端激活车间，因此创建完成后直接执行前端激活，不再被 busy
+    守卫拦截，也不重复请求 switch。
+  - 新增 `resetWorkshopUiState()`，切换或新建车间时清空分析结果、运行状态、
+    选中轨道、可视化数据、播放状态和旧面板显示。
+  - 创建流程使用 `try/catch/finally`，确保 overlay 和 busy 状态可靠释放。
+- `src/ui/static/index.html`、`src/ui/static/js/app.js`、
+  `src/ui/static/js/event_stream.js`
+  - 模块资源版本统一更新为 `20260716b`，包括 `api.js` 依赖。
+- `src/ui/server.py`
+  - `/` 和 `/static/*` 响应增加 `Cache-Control: no-store, max-age=0` 与
+    `Pragma: no-cache`，避免后续再次出现前端模块版本混搭。
+
+### 验证
+
+- 浏览器最小复现确认旧代码中新车间后端 active、前端仍停留欢迎页。
+- 新增首页和静态脚本缓存头回归测试。
+- 修复后连续新建两个车间，侧边栏 active ID 随新车间变化，当前 Tab 回到 Tab1，
+  分析面板隐藏、分析结果为空，控制台无应用错误。
+- 首页和静态脚本均返回 `Cache-Control: no-store, max-age=0`，入口及模块依赖
+  统一使用版本 `20260716b`。
+- 静态缓存、SSE 并发和分析结果恢复相关回归测试：`4 passed`。
+- Python `py_compile`、JavaScript `node --check` 和 `git diff --check` 通过。
+- `node --check src/ui/static/js/api.js` 通过。
+- 使用真实 HTTP 接口创建并删除临时车间，响应成功，后续列表中不再存在该车间。
+
+## 2026-07-16：ChordNet 2E1D 真实分析进度
+
+### 现象
+
+Tab2 使用 `chord_chordnet_2e1d` 分析时，进度会快速到达 95%，之后长时间
+保持不变。原来的 95% 不是模型的真实完成比例，而是同步插件通用心跳的上限。
+
+### 根因
+
+- `call_plugin_execute_async()` 会为所有同步插件定时增加模拟进度，最高到 95%。
+- ChordNet 插件虽然执行了 CQT、模型加载、滑窗推理和结果编码，但没有把这些
+  阶段的进度传给 Orchestrator。
+- ChordMini 的滑窗推理循环没有提供按批次完成比例的回调。
+
+### 修改
+
+- `src/kernel/core/kernel_orchestrator.py`
+  - 支持插件通过 `reports_progress = True` 声明原生进度。
+  - 对声明原生进度的插件停止注入模拟心跳，避免真实进度被假进度推到 95%。
+- `src/plugins/chord/chordnet_2e1d.py`
+  - 声明 `reports_progress = True`。
+  - 按 CQT、模型准备、滑窗推理、结果编码阶段上报进度。
+  - 将滑窗批次完成比例映射到 35% 至 95%。
+  - 使用轻量模型代理统计滑窗推理中的真实 forward 批次。
+  - 每完成一个批次，上报 `completed_batches / total_batches`，不修改
+    ChordMini submodule。
+- 测试
+  - 验证原生进度插件不会收到额外模拟心跳。
+  - 验证 ChordNet 进度单调递增并最终到达 99%。
+  - 验证滑窗推理按真实批次比例上报进度。
+
+### 进度区间
+
+- 2% 至 25%：读取音轨与 CQT 特征提取。
+- 28% 至 35%：加载或复用模型。
+- 35% 至 95%：按滑窗推理批次推进。
+- 97% 至 99%：结果编码和写入 ResourceController。
+- 插件返回后由 `analysis_done` 将 UI 切换为完成状态。
+
+### 验证
+
+```powershell
+D:\anaconda\envs\pyq\python.exe -m pytest `
+  tests\unit\test_chordnet_2e1d.py `
+  tests\unit\test_kernel_orchestration.py -q
+```
+
+结果：`17 passed`。
+
+以下文件通过 `py_compile`：
+
+- `src/kernel/core/kernel_orchestrator.py`
+- `src/plugins/chord/chordnet_2e1d.py`
+- `tests/unit/test_chordnet_2e1d.py`
+- `tests/unit/test_kernel_orchestration.py`
+
+## 2026-07-16：Tab3 和弦结果显示与恢复修复
+
+### 现象
+
+Tab2 的 ChordNet 2E1D 六轨分析全部显示完成，但进入 Tab3 后每条音轨都显示
+`no chord data in result`。
+
+### 定位结果
+
+缓存结果本身正常。测试车间中实际保存了：
+
+- vocals：1 个和弦段
+- drums：1 个和弦段
+- bass：109 个和弦段
+- piano：23 个和弦段
+- guitar：146 个和弦段
+- other：143 个和弦段
+
+问题来自结果事件和前端恢复链路：
+
+1. Orchestrator 首次发送的 `analysis_done.result` 对 ChordNet 是数组，而前端只读取
+   `result.chords`。
+2. Kernel 持久化结束后，Workshop 会再次发送不包含 `result` 的
+   `analysis_done`，覆盖前端刚收到的数据。
+3. 重新进入车间时，前端只恢复 `{_restored: true}` 占位对象，没有读取磁盘中的
+   分析结果 JSON。
+
+### 修改
+
+- `src/kernel/core/kernel_orchestrator.py`
+  - `start_analysis()` 新增兼容参数 `emit_done_event`。
+  - 独立调用默认仍发送完成事件。
+  - 数组结果统一规范化为 `{"chords": [...]}`。
+- `src/kernel/kernel.py`
+  - 正式 Kernel 链路关闭 Orchestrator 的早期完成事件。
+  - 分析结果写盘成功后，将规范化结果交给 Workshop 发送。
+- `src/kernel/core/workshop.py`
+  - `complete_analysis()` 支持接收可选 `result`。
+  - 唯一的正式 `analysis_done` 同时包含 `track`、`task_id`、
+    `result_path` 和规范化 `result`。
+- `src/ui/api/analysis.py`
+  - 新增 `GET /api/workshops/{wid}/analysis-results`。
+  - 从各音轨最新的已完成任务中读取持久化 JSON。
+  - 兼容历史数组格式并规范化为 `{"chords": [...]}`。
+- `src/ui/static/js/api.js`
+  - 新增 `getAnalysisResults(wid)`。
+- `src/ui/static/js/app.js`
+  - 即时完成事件兼容数组和对象两种结果格式。
+  - 忽略不包含结果的旧完成事件，避免覆盖已有数据。
+  - 重新进入车间时读取真实持久化结果，不再创建占位结果。
+  - 切换车间时清理上一个车间的分析结果和运行状态。
+
+### 验证
+
+新增回归测试：
+
+- Orchestrator 可以把完成事件延迟到 Kernel 持久化阶段。
+- Workshop 的完成事件只发送一次并携带规范化结果。
+- HTTP API 能从持久化 JSON 恢复指定音轨的和弦结果。
+
+三条回归测试结果：
+
+```text
+3 passed
+```
+
+相关完整测试集结果：
+
+```text
+135 passed, 4 failed
+```
+
+4 条失败均为已有测试与当前真实业务链路不一致，与本次修改无关：
+
+- 空车间直接启动分离。
+- 空车间直接启动分析。
+- 空车间直接请求音轨音频。
+- 测试引用当前仓库中不存在的 `src.utils.naming`。
+
+以下检查通过：
+
+- Python `py_compile`
+- `node --check src/ui/static/js/app.js`
+- `node --check src/ui/static/js/api.js`
+- `git diff --check`
+
+## 2026-07-16：历史车间恢复时 UI 锁死修复
+
+### 现象
+
+应用启动后点击磁盘中已存在的车间，鼠标一直显示等待状态，所有 UI 控件无法点击。
+新建车间在当前进程中可正常使用，但重启应用后再次打开该车间也会出现相同问题。
+
+### 根因
+
+- 前端打开页面后会建立 `/api/events` SSE 长连接。
+- SSE 的异步生成器直接调用阻塞式 `q.get(timeout=0.3)`，在等待事件时持续占用
+  uvicorn 的 asyncio 事件循环。
+- 每增加一个浏览器标签、重连或尚未及时释放的 SSE 连接，普通 HTTP 请求的延迟
+  都会按约 0.3 秒叠加。实测 TestClient 中接口只需数毫秒，真实 uvicorn 加载历史
+  车间时则被拖到约 2 秒。
+- 历史车间需要连续请求 switch、列表、state、插件和分析结果，因此延迟会被连续
+  放大；期间前端保持 `body.busy` 并禁用控件，看起来像永久锁死。
+- `handleSwitchWorkshop()` 原本也没有 `try/finally`，若恢复链路真正抛出异常，
+  busy 状态同样不会释放。
+
+### 修改
+
+- `src/ui/api/events.py`
+  - 使用 `asyncio.to_thread(q.get, True, 0.3)` 等待同步 Queue。
+  - SSE 空闲等待不再阻塞 ASGI 事件循环，其他 API 可以并发响应。
+- `src/ui/static/js/app.js`
+  - 使用 `try/catch/finally` 包裹完整的车间切换和恢复流程。
+  - 无论 HTTP 失败还是前端恢复异常，都在 `finally` 中恢复鼠标和全部控件。
+  - 恢复异常显示 toast 并写入带 `[WORKSHOP-SWITCH]` 前缀的控制台错误。
+  - 分析结果恢复接口失败时显示明确错误，不再静默处理。
+
+### 验证
+
+- 新增 SSE 并发回归测试：保持事件流时，事件循环仍能在 0.2 秒内处理定时任务
+  并收到测试事件。
+- 真实 uvicorn + 浏览器复现历史车间恢复链路。
+- 同一缓存和服务下，`analysis-results` 实际响应从约 2200 ms 降至 62 ms。
+- 浏览器点击已分析的历史车间后约 323 ms 完成恢复，`body.busy` 已移除、
+  disabled 控件数为 0，控制台无错误。
+- 两条相关回归测试结果：`2 passed`。
+- 历史车间恢复异常时 busy 状态能够可靠释放。
+- `node --check src/ui/static/js/app.js` 通过。

@@ -3,7 +3,7 @@
  * 切换车间时自动断开旧连接、建立新连接。
  */
 
-import api from './api.js';
+import api from './api.js?v=20260716b';
 
 export default class EventStream {
     constructor() {

@@ -339,6 +339,40 @@ class TestMusicWorkshopBusinessOps:
         with pytest.raises(WorkshopNotFoundError):
             ws.fail_analysis("vocals", "nonexistent", "err")
 
+    def test_complete_analysis_emits_normalized_result(self, tmp_path: Path) -> None:
+        class SpyBus:
+            def __init__(self) -> None:
+                self.events = []
+
+            def emit(self, wid, event_type, payload) -> None:
+                self.events.append((wid, event_type, payload))
+
+        bus = SpyBus()
+        wid = WorkshopCache.new_workshop_id()
+        cache = WorkshopCache(wid, root=tmp_path)
+        ws = MusicWorkshop(wid, cache, event_bus=bus, autosave=False)
+        tid = ws.upsert_analysis_task("guitar", "chord_chordnet_2e1d")
+        result_abs = ws.cache.analysis_result_file(
+            "chord_chordnet_2e1d",
+            tid,
+            "json",
+        )
+        result_abs.parent.mkdir(parents=True, exist_ok=True)
+        result_abs.write_text("{}", encoding="utf-8")
+        bus.events.clear()
+
+        result = {"chords": [{"start": 0.0, "end": 1.0, "chord": "C"}]}
+        ws.complete_analysis(
+            "guitar",
+            tid,
+            ws.cache.to_relative(result_abs),
+            result=result,
+        )
+
+        done_events = [event for event in bus.events if event[1] == "analysis_done"]
+        assert len(done_events) == 1
+        assert done_events[0][2]["result"] == result
+
     def test_complete_analysis_rejects_bad_path(
         self, fresh_workshop: MusicWorkshop
     ) -> None:

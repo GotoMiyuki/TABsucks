@@ -44,6 +44,14 @@ from src.ui.api.workshops import router as workshops_router
 STATIC_DIR: Path = Path(__file__).parent / "static"
 
 
+class NoCacheStaticFiles(StaticFiles):
+    async def get_response(self, path: str, scope):
+        response = await super().get_response(path, scope)
+        response.headers["Cache-Control"] = "no-store, max-age=0"
+        response.headers["Pragma"] = "no-cache"
+        return response
+
+
 def make_app(kernel: Kernel) -> FastAPI:
     """构造一个挂在给定 kernel 上的 FastAPI app。
 
@@ -57,7 +65,11 @@ def make_app(kernel: Kernel) -> FastAPI:
     app.state.kernel = kernel
 
     # 静态资源
-    app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+    app.mount(
+        "/static",
+        NoCacheStaticFiles(directory=str(STATIC_DIR)),
+        name="static",
+    )
 
     # API 路由
     app.include_router(workshops_router, prefix="/api", tags=["workshops"])
@@ -68,7 +80,13 @@ def make_app(kernel: Kernel) -> FastAPI:
     @app.get("/", include_in_schema=False)
     async def index() -> FileResponse:
         """首页（HTML shell，前端 spa）。"""
-        return FileResponse(str(STATIC_DIR / "index.html"))
+        return FileResponse(
+            str(STATIC_DIR / "index.html"),
+            headers={
+                "Cache-Control": "no-store, max-age=0",
+                "Pragma": "no-cache",
+            },
+        )
 
     return app
 

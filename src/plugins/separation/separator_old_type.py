@@ -111,6 +111,7 @@ class Separator:
         # 1. 创建一个安全的临时输入文件
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as temp_in:
             temp_in_path = temp_in.name
+        output_paths: list[Path] = []
         
         try:
             # soundfile 写入时需要将 shape (channels, samples) 转置为 (samples, channels)
@@ -119,6 +120,11 @@ class Separator:
             # 2. 调用模型，开始分离！
             # 6 轨模型跑完后，会返回一个包含了 6 个具体文件名的列表
             output_files = self._separator_instance.separate(temp_in_path)
+            output_dir = Path(self._separator_instance.output_dir).resolve()
+            for filename in output_files:
+                output_path = (output_dir / filename).resolve()
+                if output_path.parent == output_dir:
+                    output_paths.append(output_path)
             
             # 3. 初始化结果字典，用全零数组垫底
             # 万一模型少吐了某个轨，这里也有个静音轨道顶着，不会让后续和弦分析报错
@@ -132,9 +138,8 @@ class Separator:
             }
 
             # 4. 遍历提取模型吐出来的每个音频文件
-            for filename in output_files:
-                path = os.path.join(self._separator_instance.output_dir, filename)
-                if not os.path.exists(path): 
+            for path in output_paths:
+                if not path.exists():
                     continue # 文件不在就跳过，用上面初始化的全零数组
                 
                 # 读取分离后的音频数据
@@ -176,7 +181,7 @@ class Separator:
 
                 
                 # 5. 根据文件名包含的关键词，智能归类到对应的音轨槽位里
-                lower_name = filename.lower()
+                lower_name = path.name.lower()
                 if "vocals" in lower_name:
                     tracks_data["vocals"] = data
                 elif "drums" in lower_name:
@@ -206,10 +211,12 @@ class Separator:
         
         finally:
             # 7. 环保清理：一定要把输入的临时文件删掉，防止撑爆用户的 C 盘
-            if os.path.exists(temp_in_path):
-                os.remove(temp_in_path)
-            # 注意：咱们这里没删 output_files，audio-separator 内部默认策略可能会自己管，
-            # 如果后面发现 temp 目录里垃圾文件太多，可以在这里补一个 os.remove(path) 循环。
+            cleanup_paths = [Path(temp_in_path), *output_paths]
+            for path in cleanup_paths:
+                try:
+                    path.unlink(missing_ok=True)
+                except OSError as cleanup_error:
+                    print(f"Failed to remove temporary separation file {path}: {cleanup_error}")
 
     def separate_file(self, path: str | Path) -> SeparationResult:
         """提供一个快捷方法，允许直接传入文件路径进行分离，跳过手动创建 AudioData"""

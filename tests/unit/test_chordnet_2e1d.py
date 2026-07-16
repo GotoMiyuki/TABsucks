@@ -19,6 +19,7 @@ if _CHORDMINI_SRC not in _tabsucks_src.__path__:
 
 from src.kernel.core.resource_controller import ResourceController
 from src.plugins.chord.chordnet_2e1d import ChordNet2E1DPlugin
+import src.plugins.chord.chordnet_2e1d as chordnet_module
 
 
 class TestChordNet2E1DPluginProperties:
@@ -65,6 +66,10 @@ class TestChordNet2E1DExecute:
                                  batch_size=32, model_type="ChordNet", n_classes=170,
                                  **kwargs):
             n_frames = feature_matrix.shape[0]
+            progress_callback = kwargs.get("progress_callback")
+            if progress_callback is not None:
+                progress_callback(0.5)
+                progress_callback(1.0)
             return np.random.randint(0, n_classes, size=n_frames, dtype=np.int64)
 
         monkeypatch.setattr(ChordNet2E1DPlugin, "_init_model", mock_init)
@@ -113,3 +118,59 @@ class TestChordNet2E1DExecute:
         # 第二次调用不应报错
         result = plugin_with_mock_model.execute(rc, stem_name="piano")
         assert result["status"] == "success"
+
+    def test_execute_reports_monotonic_native_progress(self, plugin_with_mock_model) -> None:
+        rc = ResourceController()
+        rc.set_buffer("piano", np.zeros(22050, dtype=np.float32))
+        rc.set_metadata("sample_rate", 22050)
+        progress: list[float] = []
+
+        result = plugin_with_mock_model.execute(
+            rc,
+            stem_name="piano",
+            progress_callback=progress.append,
+        )
+
+        assert result["status"] == "success"
+        assert progress == sorted(progress)
+        assert progress[0] > 0.0
+        assert any(0.3 < value < 0.95 for value in progress)
+        assert progress[-1] == pytest.approx(0.99)
+
+
+class TestChordNetSlidingWindowProgress:
+    def test_reports_completed_batch_fraction(self) -> None:
+        chordnet_module._ensure_imports()
+
+        class TinyModel(torch.nn.Module):
+            def __init__(self) -> None:
+                super().__init__()
+                self.anchor = torch.nn.Parameter(torch.zeros(1))
+
+            def forward(self, features):
+                batch, frames, _ = features.shape
+                return torch.zeros(
+                    batch,
+                    frames,
+                    170,
+                    device=features.device,
+                )
+
+        progress: list[float] = []
+        features = np.zeros((300, 144), dtype=np.float32)
+
+        result = ChordNet2E1DPlugin._run_inference(
+            model=TinyModel(),
+            features=features,
+            device="cpu",
+            mean=0.0,
+            std=1.0,
+            seq_len=108,
+            batch_size=2,
+            use_overlap=False,
+            smooth_predictions=False,
+            progress_callback=progress.append,
+        )
+
+        assert result.shape == (300,)
+        assert progress == pytest.approx([0.5, 1.0])

@@ -8,9 +8,9 @@
  * - 删除 = 永久（不可恢复，除非 keep_state=true）
  */
 
-import api from './api.js';
-import EventStream from './event_stream.js';
-import { drawWaveform, drawTimeline, drawPlayhead } from './waveform.js';
+import api from './api.js?v=20260716b';
+import EventStream from './event_stream.js?v=20260716b';
+import { drawWaveform, drawTimeline, drawPlayhead } from './waveform.js?v=20260716b';
 
 const TRACKS = ['vocals', 'drums', 'bass', 'piano', 'guitar', 'other'];
 const TRACK_LABELS = {
@@ -151,27 +151,27 @@ async function handleNewWorkshop() {
     if (state.busy) return;
     state.busy = true;
     setBusyOverlay(true);
-    const r = await api.createWorkshop('New Workshop');
-    if (!r.ok) {
+    try {
+        const r = await api.createWorkshop('New Workshop');
+        if (!r.ok) {
+            showToast(`新建失败: ${r.error || '未知错误'}`, 'error');
+            return;
+        }
+        // POST /workshops 已在后端把新车间设为 active。
+        const info = r.data || r;
+        const newWid = info.id;
+        if (!newWid) {
+            showToast('新建失败: 未返回 id', 'error');
+            return;
+        }
+        await activateWorkshopUi(newWid, { switchServer: false });
+    } catch (error) {
+        console.error('[WORKSHOP-CREATE] activation failed', error);
+        showToast(`新建车间失败: ${error?.message || error}`, 'error');
+    } finally {
         state.busy = false;
         setBusyOverlay(false);
-        showToast(`新建失败: ${r.error || '未知错误'}`, 'error');
-        return;
     }
-    // 后端返回的是 {id, name, last_tab} dict（wrapped to {ok:true, data: dict}）
-    const info = r.data || r;
-    const newWid = info.id;
-    if (!newWid) {
-        state.busy = false;
-        setBusyOverlay(false);
-        showToast(`新建失败: 未返回 id`, 'error');
-        return;
-    }
-    await refreshWorkshopList();
-    // 自动激活新车间
-    await handleSwitchWorkshop(newWid);
-    state.busy = false;
-    setBusyOverlay(false);
 }
 
 async function handleSwitchWorkshop(wid) {
@@ -181,23 +181,29 @@ async function handleSwitchWorkshop(wid) {
     // UI 立刻 disable 所有写控件（按你最新定义）
     setControlsDisabled(true);
     document.body.classList.add('busy');
-    const r = await api.switchWorkshop(wid);
-    if (!r.ok) {
+    try {
+        await activateWorkshopUi(wid);
+    } catch (error) {
+        console.error('[WORKSHOP-SWITCH] restore failed', error);
+        showToast(`加载车间失败: ${error?.message || error}`, 'error');
+    } finally {
         state.busy = false;
         document.body.classList.remove('busy');
         setControlsDisabled(false);
-        showToast(`切换失败: ${r.error}`, 'error');
-        return;
+    }
+}
+
+async function activateWorkshopUi(wid, { switchServer = true } = {}) {
+    if (switchServer) {
+        const r = await api.switchWorkshop(wid);
+        if (!r.ok) {
+            throw new Error(r.error || '切换失败');
+        }
     }
     state.currentWid = wid;
     await refreshWorkshopList();
-    // refreshWorkshopList 内部 renderWorkshopList → renderWelcomePanel
-    // 第二次 render 确保 mainPanels 显示（创建车间后 currentWid 不再 null）
     renderWelcomePanel();
     await loadActiveWorkshopData();
-    state.busy = false;
-    document.body.classList.remove('busy');
-    setControlsDisabled(false);
 }
 
 async function handleCloseWorkshop(wid) {
@@ -236,16 +242,22 @@ async function handleDeleteActive() {
     state.busy = true;
     setControlsDisabled(true);
     document.body.classList.add('busy');
-    const r = await api.deleteWorkshop(wid, { keepState: true });
-    state.busy = false;
-    setControlsDisabled(false);
-    document.body.classList.remove('busy');
-    if (!r.ok) {
-        showToast(`删除失败: ${r.error}`, 'error');
-        return;
+    showToast('正在永久删除车间，请稍候...', 'info');
+    try {
+        const r = await api.deleteWorkshop(wid, { keepState: true });
+        if (!r.ok) {
+            showToast(`删除失败: ${r.error}`, 'error');
+            return;
+        }
+        state.currentWid = null;
+        await refreshWorkshopList();
+        renderWelcomePanel();
+        showToast('车间已永久删除', 'success');
+    } finally {
+        state.busy = false;
+        setControlsDisabled(false);
+        document.body.classList.remove('busy');
     }
-    state.currentWid = null;
-    await refreshWorkshopList();
 }
 
 function setBusyOverlay(visible) {
@@ -266,6 +278,9 @@ function setControlsDisabled(disabled) {
 
 async function loadActiveWorkshopData() {
     if (!state.currentWid) return;
+    resetWorkshopUiState();
+    state.analysisResults = {};
+    state.analysisRunning.clear();
     const r = await api.getWorkshopState(state.currentWid);
     if (!r.ok) {
         showToast(`加载失败: ${r.error || r}`, 'error');
@@ -294,20 +309,51 @@ async function loadActiveWorkshopData() {
     // 恢复分析配置面板（如果分离已完成）
     if (sepDone) {
         document.getElementById('phase-analyze')?.classList.remove('hidden');
-        loadAnalyzerPlugins().then(() => {
-            renderAnalysisConfig();
-            // 恢复已有分析结果状态
-            const tab3 = s.TabState?.Tab3 || {};
-            for (const [key, task] of Object.entries(tab3)) {
-                if (task.AnalysisState === 'done') {
-                    const [trackName] = key.split('::');
-                    state.analysisResults[trackName] = { _restored: true, task_id: task.AnalysisTaskId };
-                    updateAnalysisCardState(trackName, 'done');
-                }
+        await loadAnalyzerPlugins();
+        renderAnalysisConfig();
+
+        const persisted = await api.getAnalysisResults(state.currentWid);
+        if (!persisted.ok) {
+            showToast(`加载分析结果失败: ${persisted.error}`, 'error');
+        }
+        const persistedResults = persisted.results
+            || persisted.data?.results
+            || {};
+        state.analysisResults = { ...persistedResults };
+
+        const tab3 = s.TabState?.Tab3 || {};
+        for (const [key, task] of Object.entries(tab3)) {
+            if (task.AnalysisState === 'done') {
+                const [trackName] = key.split('::');
+                updateAnalysisCardState(trackName, 'done');
             }
-            renderAnalysisResults();
-        });
+        }
+        renderAnalysisResults();
     }
+}
+
+function resetWorkshopUiState() {
+    state.step = 1;
+    state.phase = 'separate';
+    state.separated = false;
+    state.selectedTracks.clear();
+    state.analysisResults = {};
+    state.analysisRunning.clear();
+    state.trackVizData = {};
+    state.playing = false;
+    state.currentTime = 0;
+
+    document.getElementById('phase-analyze')?.classList.add('hidden');
+    document.getElementById('phase-separate')?.classList.remove('hidden');
+    document.getElementById('btn-continue-tab2')?.classList.add('hidden');
+    document.getElementById('audio-info')?.classList.add('hidden');
+    document.getElementById('sep-ring-wrap-2')?.classList.add('hidden');
+    document.getElementById('analysis-config-list')?.replaceChildren();
+    document.querySelectorAll('.stem-square.selected').forEach(
+        el => el.classList.remove('selected')
+    );
+    renderAnalysisResults();
+    updateSepProgress(0);
 }
 
 function setTab(n) {
@@ -565,10 +611,18 @@ function onAnalysisProgress(track, progress) {
     }
 }
 
-function onAnalysisDone(payload) {
+function normalizeAnalysisResult(result) {
+    if (Array.isArray(result)) return { chords: result };
+    if (result && typeof result === 'object') return result;
+    return null;
+}
+
+function onAnalysisDone(payload = {}) {
     const track = payload.track;
+    if (!track) return;
     state.analysisRunning.delete(track);
-    state.analysisResults[track] = payload.result;
+    const result = normalizeAnalysisResult(payload.result);
+    if (result) state.analysisResults[track] = result;
     updateAnalysisCardState(track, 'done');
     renderAnalysisResults();
     showToast(`分析 ${track} 完成`, 'success');

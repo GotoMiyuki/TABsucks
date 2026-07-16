@@ -6,13 +6,17 @@
 
 from __future__ import annotations
 
+import asyncio
 import io
+import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
 
 from src.kernel.kernel import Kernel
+from src.ui.api.events import events
 from src.ui.server import make_app
 
 # 别名，兼容旧测试中的 ``_P`` 局部引用
@@ -224,6 +228,46 @@ class TestSSE:
         schema = client.get("/openapi.json").json()
         assert "/api/events" in schema["paths"]
 
+    def test_sse_wait_does_not_block_event_loop(
+        self, kernel_and_client
+    ) -> None:
+        kernel, _ = kernel_and_client
+
+        async def is_disconnected() -> bool:
+            await asyncio.sleep(0)
+            return False
+
+        request = SimpleNamespace(
+            app=SimpleNamespace(
+                state=SimpleNamespace(kernel=kernel),
+            ),
+            is_disconnected=is_disconnected,
+        )
+
+        async def scenario() -> tuple[str, float]:
+            response = await events(request)
+
+            async def emit_soon() -> None:
+                await asyncio.sleep(0.05)
+                kernel.bus.emit("wid", "test_event", {"ok": True})
+
+            emitter = asyncio.create_task(emit_soon())
+            started = time.perf_counter()
+            try:
+                frame = await asyncio.wait_for(
+                    anext(response.body_iterator),
+                    timeout=0.2,
+                )
+            finally:
+                await emitter
+                await response.body_iterator.aclose()
+            return frame, time.perf_counter() - started
+
+        frame, elapsed = asyncio.run(scenario())
+
+        assert '"type": "test_event"' in frame
+        assert elapsed < 0.2
+
 
 # ---------------------------------------------------------------------------
 # SSE 端到端 smoke test（separate process 跑）
@@ -317,6 +361,29 @@ class TestMockEndpoints:
         assert r.status_code == 200
         assert r.json()["ok"] is True
 
+    def test_get_analysis_results_reads_persisted_json(
+        self, kernel_and_client
+    ) -> None:
+        kernel, client = kernel_and_client
+        wid = kernel.create_workshop("X")["id"]
+        ws = kernel.manager.get(wid)
+        tid = ws.upsert_analysis_task("guitar", "chord_chordnet_2e1d")
+        expected = {
+            "chords": [{"start": 0.0, "end": 1.0, "chord": "C"}]
+        }
+        result_abs = ws.cache.save_analysis_result(
+            "chord_chordnet_2e1d",
+            tid,
+            expected,
+            ext="json",
+        )
+        ws.complete_analysis("guitar", tid, ws.cache.to_relative(result_abs))
+
+        r = client.get(f"/api/workshops/{wid}/analysis-results")
+
+        assert r.status_code == 200
+        assert r.json()["results"]["guitar"] == expected
+
     def test_visualization_mock(self, kernel_and_client) -> None:
         kernel, client = kernel_and_client
         wid = kernel.create_workshop("X")["id"]
@@ -355,6 +422,16 @@ class TestStaticFiles:
         r = client.get("/static/js/app.js")
         assert r.status_code == 200
         assert "app.js" in r.text or "TABsucks" in r.text
+        assert r.headers["cache-control"] == "no-store, max-age=0"
+
+    def test_index_disables_cache(self, kernel_and_client) -> None:
+        _, client = kernel_and_client
+
+        r = client.get("/")
+
+        assert r.status_code == 200
+        assert r.headers["cache-control"] == "no-store, max-age=0"
+        assert "app.js?v=20260716b" in r.text
 
 
 class TestPluginEndpoints:
