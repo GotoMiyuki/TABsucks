@@ -74,12 +74,22 @@ KEY_SEPARATION_STATE: str = "SeparationState"
 KEY_SEPARATION_MODEL_NAME: str = "SeparationModelName"
 KEY_SEPARATION_MODEL_PATH: str = "SeparationModelPath"
 KEY_TRACK_AUDIO_FILE_PATH: str = "TrackAudioFilePath"
+KEY_SELECTED_TRACKS: str = "SelectedTracks"
 KEY_ANALYSIS_TOOL_NAME: str = "AnalysisToolName"
 KEY_ANALYSIS_STATE: str = "AnalysisState"
 KEY_ANALYSIS_RESULT_PATH: str = "AnalysisResultPath"
 KEY_ANALYSIS_TASK_ID: str = "AnalysisTaskId"
 KEY_SELECTED_ANALYSIS_RESULT_PATH: str = "SelectedAnalysisResultPath"
 KEY_MIX_STATE: str = "MixState"
+
+TRACK_NAMES: tuple[str, ...] = (
+    "vocals",
+    "drums",
+    "bass",
+    "piano",
+    "guitar",
+    "other",
+)
 
 
 @dataclass
@@ -139,6 +149,7 @@ class Tab2State:
     separation_model_path: str | None = None
     #: ``{track_name: relative_path}`` —— 相对 workshop_dir
     track_audio_file_path: dict[str, str] = field(default_factory=dict)
+    selected_tracks: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -146,6 +157,7 @@ class Tab2State:
             KEY_SEPARATION_MODEL_NAME: self.separation_model_name,
             KEY_SEPARATION_MODEL_PATH: self.separation_model_path,
             KEY_TRACK_AUDIO_FILE_PATH: dict(self.track_audio_file_path),
+            KEY_SELECTED_TRACKS: list(self.selected_tracks),
         }
 
     @classmethod
@@ -165,6 +177,14 @@ class Tab2State:
                 )
         model_name = d.get(KEY_SEPARATION_MODEL_NAME)
         model_path = d.get(KEY_SEPARATION_MODEL_PATH)
+        selected_tracks = d.get(KEY_SELECTED_TRACKS, [])
+        if not isinstance(selected_tracks, list) or any(
+            not isinstance(track, str) or track not in TRACK_NAMES
+            for track in selected_tracks
+        ):
+            raise ValidationError(
+                f"Tab2.{KEY_SELECTED_TRACKS} 必须是合法音轨名组成的 list"
+            )
         if model_name is not None and not isinstance(model_name, str):
             raise ValidationError(
                 f"Tab2.{KEY_SEPARATION_MODEL_NAME} 必须是字符串或 null"
@@ -178,6 +198,9 @@ class Tab2State:
             separation_model_name=model_name,
             separation_model_path=model_path,
             track_audio_file_path=dict(track_paths),
+            selected_tracks=[
+                track for track in TRACK_NAMES if track in selected_tracks
+            ],
         )
 
 
@@ -612,6 +635,9 @@ class MusicWorkshop:
             self._state.tab_state.tab2.separation_state = "running"
             self._state.tab_state.tab2.separation_model_name = model_name
             self._state.tab_state.tab2.separation_model_path = model_path
+            self._state.tab_state.tab2.selected_tracks = []
+            self._state.tab_state.tab3.clear()
+            self._state.tab_state.tab4.clear()
             self._mark_dirty()
             self.save()
             self._emit("separation_started", {"model": model_name})
@@ -662,6 +688,33 @@ class MusicWorkshop:
                 logger.warning("TrackAudioFilePath[%s] 不合法: %s", name, e)
         return result
 
+    def set_selected_tracks(self, track_names: list[str]) -> None:
+        """保存 Tab2 用户选择的下游分析音轨，按固定六轨顺序去重。"""
+        if not isinstance(track_names, list) or any(
+            not isinstance(track, str) or track not in TRACK_NAMES
+            for track in track_names
+        ):
+            raise ValidationError("SelectedTracks 包含非法音轨名")
+        with self._lock:
+            tab2 = self._state.tab_state.tab2
+            if tab2.separation_state != "done":
+                raise ValidationError("音轨分离尚未完成，不能保存 SelectedTracks")
+            available = set(tab2.track_audio_file_path)
+            unavailable = [track for track in track_names if track not in available]
+            if unavailable:
+                raise ValidationError(
+                    f"SelectedTracks 包含不可用音轨: {unavailable}"
+                )
+            selected = [track for track in TRACK_NAMES if track in track_names]
+            self._state.tab_state.tab2.selected_tracks = selected
+            self._mark_dirty()
+            self.save()
+            self._emit("selected_tracks_changed", {"tracks": selected})
+
+    def get_selected_tracks(self) -> list[str]:
+        """返回 Tab2 已选择的音轨副本。"""
+        return list(self._state.tab_state.tab2.selected_tracks)
+
     # ------------------------------------------------------------------
     # Tab3 — 分析
     # ------------------------------------------------------------------
@@ -669,7 +722,8 @@ class MusicWorkshop:
     def upsert_analysis_task(self, track_name: str, tool_name: str) -> str:
         """新增 / 获取一个分析任务，返回 task_id。
 
-        同 ``track_name + tool_name`` 会复用已有的首个 task_id；否则新建。
+        同 ``track_name + tool_name`` 仅复用仍在运行的任务；已完成或失败后的重跑
+        会创建新 task_id，确保最新结果在持久化顺序中可被可靠恢复。
         """
         if not isinstance(track_name, str) or not track_name:
             raise ValidationError("track_name 必须是非空字符串")
@@ -681,7 +735,7 @@ class MusicWorkshop:
                 if (
                     state.analysis_tool_name == tool_name
                     and parse_tab3_key(key)[0] == track_name
-                    and state.analysis_state in ("running", "done")
+                    and state.analysis_state == "running"
                 ):
                     return parse_tab3_key(key)[1]
             task_id = new_task_id()
@@ -729,6 +783,7 @@ class MusicWorkshop:
             self.save()
             payload: dict[str, Any] = {
                 "track": track_name,
+                "plugin": self._state.tab_state.tab3[key].analysis_tool_name,
                 "task_id": task_id,
                 "result_path": result_path_rel,
             }
@@ -747,7 +802,12 @@ class MusicWorkshop:
             self.save()
             self._emit(
                 "analysis_failed",
-                {"track": track_name, "task_id": task_id, "error": error},
+                {
+                    "track": track_name,
+                    "plugin": self._state.tab_state.tab3[key].analysis_tool_name,
+                    "task_id": task_id,
+                    "error": error,
+                },
             )
 
     def list_analysis_tasks(
@@ -1103,6 +1163,7 @@ __all__ = [
     "TaskIdCollisionError",
     "TabName",
     "RunState",
+    "TRACK_NAMES",
     "MixState",
     "Tab1State",
     "Tab2State",

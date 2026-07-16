@@ -91,6 +91,7 @@ class TestStateDataclasses:
             separation_model_name="BS-RoFormer-SW",
             separation_model_path="/models/bsroformer.ckpt",
             track_audio_file_path={"vocals": "track_audio/track_vocals/v.wav"},
+            selected_tracks=["vocals", "guitar"],
         )
         d = t.to_dict()
         # 验证 key 名与会议一致（camelCase）
@@ -98,6 +99,7 @@ class TestStateDataclasses:
         assert "SeparationModelName" in d
         assert "SeparationModelPath" in d
         assert "TrackAudioFilePath" in d
+        assert d["SelectedTracks"] == ["vocals", "guitar"]
         t2 = Tab2State.from_dict(d)
         assert t == t2
 
@@ -108,6 +110,10 @@ class TestStateDataclasses:
     def test_tab2_invalid_track_paths_raises(self) -> None:
         with pytest.raises(ValidationError, match="TrackAudioFilePath"):
             Tab2State.from_dict({"TrackAudioFilePath": "not a dict"})
+
+    def test_tab2_invalid_selected_tracks_raises(self) -> None:
+        with pytest.raises(ValidationError, match="SelectedTracks"):
+            Tab2State.from_dict({"SelectedTracks": ["vocals", "not-a-track"]})
 
     def test_tab3_track_state_roundtrip(self) -> None:
         t = Tab3TrackState(
@@ -310,7 +316,7 @@ class TestMusicWorkshopBusinessOps:
         assert tasks[0].analysis_tool_name == "chord_ismir2019"
         assert tasks[0].analysis_state == "running"
 
-    def test_upsert_reuses_existing_task_when_done(
+    def test_upsert_creates_new_task_when_rerunning_completed_tool(
         self, fresh_workshop: MusicWorkshop
     ) -> None:
         ws = fresh_workshop
@@ -318,9 +324,10 @@ class TestMusicWorkshopBusinessOps:
         result_abs = ws.cache.analysis_result_file("chord_x", tid1, "json")
         result_abs.parent.mkdir(parents=True, exist_ok=True)
         ws.complete_analysis("piano", tid1, ws.cache.to_relative(result_abs))
-        # 再调，应复用之前的 task_id（drop 已 done 的旧数据覆盖）
+        # 重跑已完成工具应创建新任务，保证最新结果排在持久化顺序末尾。
         tid2 = ws.upsert_analysis_task("piano", "chord_x")
-        assert tid1 == tid2
+        assert tid1 != tid2
+        assert len(ws.list_analysis_tasks("piano")) == 2
 
     def test_complete_and_fail_analysis(
         self, fresh_workshop: MusicWorkshop
@@ -371,6 +378,7 @@ class TestMusicWorkshopBusinessOps:
 
         done_events = [event for event in bus.events if event[1] == "analysis_done"]
         assert len(done_events) == 1
+        assert done_events[0][2]["plugin"] == "chord_chordnet_2e1d"
         assert done_events[0][2]["result"] == result
 
     def test_complete_analysis_rejects_bad_path(
@@ -422,6 +430,58 @@ class TestMusicWorkshopBusinessOps:
         ws._dirty = False  # 重置 dirty
         ws.set_last_tab("Tab1")  # 一样不触发
         assert ws._dirty is False
+
+    def test_set_selected_tracks_persists_in_track_order(
+        self, fresh_workshop: MusicWorkshop
+    ) -> None:
+        ws = fresh_workshop
+
+        ws.state.tab_state.tab2.separation_state = "done"
+        ws.state.tab_state.tab2.track_audio_file_path = {
+            "vocals": "track_audio/vocals.wav",
+            "guitar": "track_audio/guitar.wav",
+        }
+        ws.set_selected_tracks(["guitar", "vocals", "guitar"])
+
+        assert ws.get_selected_tracks() == ["vocals", "guitar"]
+        saved = ws.cache.load_state()
+        assert saved["TabState"]["Tab2"]["SelectedTracks"] == [
+            "vocals",
+            "guitar",
+        ]
+
+    def test_new_separation_invalidates_selection_and_analysis(
+        self, fresh_workshop: MusicWorkshop
+    ) -> None:
+        ws = fresh_workshop
+        ws.state.tab_state.tab2.separation_state = "done"
+        ws.state.tab_state.tab2.track_audio_file_path = {
+            "vocals": "track_audio/vocals.wav",
+        }
+        ws.set_selected_tracks(["vocals"])
+        task_id = ws.upsert_analysis_task("vocals", "chord_test")
+        ws.state.tab_state.tab4["vocals"] = Tab4TrackState()
+
+        ws.start_separation("separation_test")
+
+        assert ws.get_selected_tracks() == []
+        assert ws.state.tab_state.tab3 == {}
+        assert ws.state.tab_state.tab4 == {}
+        assert task_id
+
+    def test_set_selected_tracks_requires_available_separated_stems(
+        self, fresh_workshop: MusicWorkshop
+    ) -> None:
+        ws = fresh_workshop
+        with pytest.raises(ValidationError, match="尚未完成"):
+            ws.set_selected_tracks(["vocals"])
+
+        ws.state.tab_state.tab2.separation_state = "done"
+        ws.state.tab_state.tab2.track_audio_file_path = {
+            "vocals": "track_audio/vocals.wav",
+        }
+        with pytest.raises(ValidationError, match="不可用音轨"):
+            ws.set_selected_tracks(["guitar"])
 
     def test_rename_works(
         self, fresh_workshop: MusicWorkshop

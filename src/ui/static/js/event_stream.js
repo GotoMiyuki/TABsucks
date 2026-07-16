@@ -1,9 +1,6 @@
-/**
- * SSE 事件流封装。
- * 切换车间时自动断开旧连接、建立新连接。
- */
+/** SSE 全局事件流封装，按当前 active workshop 在前端路由。 */
 
-import api from './api.js?v=20260716b';
+import api from './api.js?v=20260716g';
 
 export default class EventStream {
     constructor() {
@@ -19,14 +16,25 @@ export default class EventStream {
         return this; // 链式调用
     }
 
-    /** 连接到指定车间的事件流 */
-    connect(wid) {
+    /** 更新当前接收业务事件的 workshop，不重建全局 SSE 连接。 */
+    setWorkshopId(wid) {
+        this._wid = wid || null;
+    }
+
+    /** 建立唯一的全局事件流连接。 */
+    connect(wid = null) {
         this.disconnect();
-        this._wid = wid;
-        this._source = api.createEventStream(wid);
+        this.setWorkshopId(wid);
+        this._source = api.createEventStream();
         this._source.onmessage = (e) => {
             try {
                 const event = JSON.parse(e.data);
+                if (
+                    event.workshop_id
+                    && event.workshop_id !== this._wid
+                ) {
+                    return;
+                }
                 const handlers = this._handlers[event.type] || [];
                 handlers.forEach(fn => fn(event.payload));
             } catch (err) {

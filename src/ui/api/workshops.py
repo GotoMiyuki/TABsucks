@@ -6,10 +6,12 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
+
+from src.kernel.core.workshop import MusicWorkshop, ValidationError
 
 router = APIRouter()
 
@@ -37,6 +39,18 @@ class DeleteWorkshopRequest(BaseModel):
     keep_state: bool = False
 
 
+class SelectedTracksRequest(BaseModel):
+    """PUT /api/workshops/<wid>/selected-tracks body."""
+
+    tracks: list[str] = Field(max_length=6)
+
+
+class CurrentTabRequest(BaseModel):
+    """PUT /api/workshops/<wid>/current-tab body."""
+
+    tab: Literal["Tab1", "Tab2", "Tab3", "Tab4"]
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -53,6 +67,19 @@ def _kernel(request: Request):
 def _err(status: int, msg: str) -> None:
     """统一错误格式。"""
     raise HTTPException(status_code=status, detail={"error": msg})
+
+
+def _active_workshop(request: Request, wid: str) -> MusicWorkshop:
+    """返回 active 车间；inactive 车间禁止通过 UI API 写入。"""
+    kernel = _kernel(request)
+    if kernel.manager is None:
+        _err(503, "Kernel 未 boot")
+    ws = kernel.manager.get(wid)
+    if ws is None:
+        _err(404, f"车间 {wid} 不存在")
+    if kernel.manager.active_id() != wid:
+        _err(409, f"车间 {wid} 当前未激活，禁止写入")
+    return ws
 
 
 # ---------------------------------------------------------------------------
@@ -116,6 +143,34 @@ def rename_workshop(
     if not kernel.rename_workshop(wid, req.name):
         _err(404, f"车间 {wid} 不存在")
     return {"ok": True, "name": req.name}
+
+
+@router.put("/workshops/{wid}/selected-tracks")
+def update_selected_tracks(
+    wid: str,
+    req: SelectedTracksRequest,
+    request: Request,
+) -> dict[str, Any]:
+    """保存 Tab2 多选音轨，供 Tab3 和重启恢复使用。"""
+    ws = _active_workshop(request, wid)
+    try:
+        ws.set_selected_tracks(list(req.tracks))
+    except ValidationError as error:
+        _err(409, str(error))
+    return {"ok": True, "tracks": ws.get_selected_tracks()}
+
+
+@router.put("/workshops/{wid}/current-tab")
+def update_current_tab(
+    wid: str,
+    req: CurrentTabRequest,
+    request: Request,
+) -> dict[str, Any]:
+    """立即保存当前 UI Tab，供重启后恢复。"""
+    ws = _active_workshop(request, wid)
+    ws.set_last_tab(req.tab)
+    ws.save()
+    return {"ok": True, "tab": req.tab}
 
 
 @router.delete("/workshops/{wid}")

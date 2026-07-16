@@ -1,6 +1,6 @@
 /**
  * TABsucks 主控制器
- * 工作流：欢迎页 ↔ active 车间（INPUT → SELECT → OUTPUT）
+ * 工作流：欢迎页 ↔ active 车间（输入 → 分离/选轨 → 分析 → 播放导出）
  *
  * 重要契约（与 src/kernel/core/workshop.py 一致）：
  * - 任何点击"切换 / 关闭"前必须先 disable 车间所有控件（setBusy(true)）
@@ -8,9 +8,10 @@
  * - 删除 = 永久（不可恢复，除非 keep_state=true）
  */
 
-import api from './api.js?v=20260716b';
-import EventStream from './event_stream.js?v=20260716b';
-import { drawWaveform, drawTimeline, drawPlayhead } from './waveform.js?v=20260716b';
+import api from './api.js?v=20260716g';
+import EventStream from './event_stream.js?v=20260716g';
+import { drawWaveform } from './waveform.js?v=20260716g';
+import { calculateTimelineLayout, clampTimelineZoom } from './timeline_zoom.js?v=20260716g';
 
 const TRACKS = ['vocals', 'drums', 'bass', 'piano', 'guitar', 'other'];
 const TRACK_LABELS = {
@@ -25,13 +26,25 @@ const TRACK_COLORS = {
 const state = {
     workshops: [],          // list {id, name, last_tab, active}
     currentWid: null,       // 当前 active 车间
-    step: 1,                // 1=INPUT, 2=SELECT, 3=OUTPUT
-    phase: 'separate',       // 仅 step=2 时有意义
+    step: 1,
+    hasRawAudio: false,
     separated: false,
+    separating: false,
+    availableTracks: [],
     selectedTracks: new Set(),
+    selectionSaving: false,
     analysisResults: {},
+    analysisResultPlugins: {},
+    analyzerSelections: {},
+    analysisPendingPlugins: {},
     analysisRunning: new Set(),
+    analysisBatchQueue: [],
+    analysisBatchCurrent: null,
+    analysisBatchRunning: false,
     trackVizData: {},
+    audioElements: new Map(),
+    tab4LoadToken: 0,
+    timelineZoom: 1,
     busy: false,            // 任何"切/关/删/新建"进行中
     // playback
     playing: false,
@@ -43,6 +56,7 @@ const state = {
 };
 
 const stream = new EventStream();
+let _tabSaveChain = Promise.resolve();
 
 // ══════════════════════════════════════
 //  Init
@@ -53,7 +67,7 @@ function bindNavigation() {
     document.querySelectorAll('.step-indicator').forEach(el => {
         el.addEventListener('click', () => {
             const tab = parseInt(el.dataset.tab, 10);
-            if (tab >= 1 && tab <= 4) setTab(tab);
+            if (tab >= 1 && tab <= 4) requestTab(tab);
         });
     });
 }
@@ -67,12 +81,12 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     stream
         .on('separation_progress', p => updateSepProgress(p.progress))
-        .on('separation_done', () => onSeparationDone())
+        .on('separation_done', p => onSeparationDone(p))
         .on('separation_failed', p => onSeparationFailed(p))
-        .on('analysis_started', p => onAnalysisStarted(p.track))
+        .on('analysis_started', p => onAnalysisStarted(p))
         .on('analysis_progress', p => onAnalysisProgress(p.track, p.progress))
         .on('analysis_done', p => onAnalysisDone(p))
-        .on('analysis_failed', p => onAnalysisFailed(p.track, p.error))
+        .on('analysis_failed', p => onAnalysisFailed(p))
         .on('url_download_progress', p => updateDlProgress(p.progress));
 
     // 启动时建立 SSE（一次连接永久用，按 wid 过滤）
@@ -201,6 +215,7 @@ async function activateWorkshopUi(wid, { switchServer = true } = {}) {
         }
     }
     state.currentWid = wid;
+    stream.setWorkshopId(wid);
     await refreshWorkshopList();
     renderWelcomePanel();
     await loadActiveWorkshopData();
@@ -224,6 +239,7 @@ async function handleCloseWorkshop(wid) {
     }
     if (state.currentWid === wid) {
         state.currentWid = null;
+        stream.setWorkshopId(null);
     }
     await refreshWorkshopList();
     renderWelcomePanel();    // 确保 mainPanels 重新隐藏
@@ -250,6 +266,7 @@ async function handleDeleteActive() {
             return;
         }
         state.currentWid = null;
+        stream.setWorkshopId(null);
         await refreshWorkshopList();
         renderWelcomePanel();
         showToast('车间已永久删除', 'success');
@@ -278,10 +295,16 @@ function setControlsDisabled(disabled) {
 
 async function loadActiveWorkshopData() {
     if (!state.currentWid) return;
+    const wid = state.currentWid;
     resetWorkshopUiState();
     state.analysisResults = {};
+    state.analysisResultPlugins = {};
+    state.analyzerSelections = {};
+    state.analysisPendingPlugins = {};
     state.analysisRunning.clear();
-    const r = await api.getWorkshopState(state.currentWid);
+    cancelAnalysisBatch();
+    const r = await api.getWorkshopState(wid);
+    if (state.currentWid !== wid) return;
     if (!r.ok) {
         showToast(`加载失败: ${r.error || r}`, 'error');
         return;
@@ -291,78 +314,160 @@ async function loadActiveWorkshopData() {
     // 优先：恢复上次离开时所在的 Tab（LastTab 字段）
     const lastTabMap = { Tab1: 1, Tab2: 2, Tab3: 3, Tab4: 4 };
     const lastStep = lastTabMap[s.LastTab] || 1;
-    // 用数据推导限制
+    const tab2 = s.TabState?.Tab2 || {};
     const hasRaw = !!(s.TabState?.Tab1?.RawAudioFilePath);
     const sepDone = s.TabState?.Tab2?.SeparationState === 'done';
-    const hasAnalysis = Object.values(s.TabState?.Tab3 || {}).some(
-        t => t.AnalysisState === 'done'
+    state.hasRawAudio = hasRaw;
+    state.separated = sepDone;
+    state.availableTracks = TRACKS.filter(
+        track => !!tab2.TrackAudioFilePath?.[track]
+    );
+    state.selectedTracks = new Set(
+        (tab2.SelectedTracks || []).filter(
+            track => state.availableTracks.includes(track)
+        )
     );
 
-    let targetTab = lastStep;
-    if (!hasRaw && targetTab > 1) targetTab = 1;
-    if (!sepDone && targetTab > 2) targetTab = 2;
-    if (!hasAnalysis && targetTab > 3) targetTab = 3;
-
-    setTab(targetTab);
-    state.separated = targetTab >= 3;
-
-    // 恢复分析配置面板（如果分离已完成）
     if (sepDone) {
-        document.getElementById('phase-analyze')?.classList.remove('hidden');
-        await loadAnalyzerPlugins();
-        renderAnalysisConfig();
-
-        const persisted = await api.getAnalysisResults(state.currentWid);
+        const persisted = await api.getAnalysisResults(wid);
+        if (state.currentWid !== wid) return;
         if (!persisted.ok) {
             showToast(`加载分析结果失败: ${persisted.error}`, 'error');
         }
         const persistedResults = persisted.results
             || persisted.data?.results
             || {};
+        const persistedPlugins = persisted.result_plugins
+            || persisted.data?.result_plugins
+            || {};
         state.analysisResults = { ...persistedResults };
-
-        const tab3 = s.TabState?.Tab3 || {};
-        for (const [key, task] of Object.entries(tab3)) {
-            if (task.AnalysisState === 'done') {
-                const [trackName] = key.split('::');
-                updateAnalysisCardState(trackName, 'done');
-            }
-        }
-        renderAnalysisResults();
+        state.analysisResultPlugins = { ...persistedPlugins };
+        await loadAnalyzerPlugins();
+        if (state.currentWid !== wid) return;
+        initializeAnalyzerSelections();
     }
+
+    let targetTab = lastStep;
+    if (!hasRaw && targetTab > 1) targetTab = 1;
+    if (!sepDone && targetTab > 2) targetTab = 2;
+    if (state.selectedTracks.size === 0 && targetTab > 2) targetTab = 2;
+    if (!allSelectedTracksAnalyzed() && targetTab > 3) targetTab = 3;
+
+    renderStemSelection();
+    renderAnalysisConfig();
+    setTab(targetTab);
 }
 
 function resetWorkshopUiState() {
     state.step = 1;
-    state.phase = 'separate';
+    state.hasRawAudio = false;
     state.separated = false;
+    state.separating = false;
+    state.availableTracks = [];
     state.selectedTracks.clear();
+    state.selectionSaving = false;
     state.analysisResults = {};
+    state.analysisResultPlugins = {};
+    state.analyzerSelections = {};
+    state.analysisPendingPlugins = {};
     state.analysisRunning.clear();
+    cancelAnalysisBatch();
+    destroyTab4Playback();
     state.trackVizData = {};
+    state.timelineZoom = 1;
+    syncTab4ZoomControls();
     state.playing = false;
     state.currentTime = 0;
 
-    document.getElementById('phase-analyze')?.classList.add('hidden');
-    document.getElementById('phase-separate')?.classList.remove('hidden');
     document.getElementById('btn-continue-tab2')?.classList.add('hidden');
     document.getElementById('audio-info')?.classList.add('hidden');
     document.getElementById('sep-ring-wrap-2')?.classList.add('hidden');
     document.getElementById('analysis-config-list')?.replaceChildren();
-    document.querySelectorAll('.stem-square.selected').forEach(
-        el => el.classList.remove('selected')
-    );
-    renderAnalysisResults();
+    renderStemSelection();
     updateSepProgress(0);
+    updateNavigationControls();
 }
 
 function setTab(n) {
+    const previousStep = state.step;
+    if (previousStep === 4 && n !== 4) {
+        pausePlayback();
+    }
     state.step = n;
     document.querySelectorAll('.step-panel').forEach(p => p.classList.remove('active'));
     document.querySelector(`.step-panel#step-${n}`)?.classList.add('active');
     document.querySelectorAll('.step-indicator').forEach((el, i) => {
         el.classList.toggle('active', i < n);
     });
+    if (n === 3) renderAnalysisConfig();
+    const playback = document.getElementById('playback-controls');
+    if (playback) playback.classList.toggle('hidden', n !== 4);
+    if (n === 4) void loadTab4();
+    updateNavigationControls();
+    if (state.currentWid) {
+        persistCurrentTab(state.currentWid, `Tab${n}`);
+    }
+}
+
+function persistCurrentTab(wid, tab) {
+    _tabSaveChain = _tabSaveChain.then(async () => {
+        if (state.currentWid !== wid) return;
+        const response = await api.updateCurrentTab(wid, tab);
+        if (!response.ok && state.currentWid === wid) {
+            console.warn('[TAB-NAV] failed to persist current tab:', response.error);
+        }
+    });
+}
+
+function requestTab(n) {
+    if (n <= state.step) {
+        setTab(n);
+        return;
+    }
+    if (n >= 2 && !state.hasRawAudio) {
+        showToast('请先在 Tab1 上传音频', 'warning');
+        return;
+    }
+    if (n >= 3 && !state.separated) {
+        showToast('请先在 Tab2 完成音轨分离', 'warning');
+        return;
+    }
+    if (n >= 3 && state.selectedTracks.size === 0) {
+        showToast('请先在 Tab2 选择至少一条音轨', 'warning');
+        return;
+    }
+    if (n >= 4 && !allSelectedTracksAnalyzed()) {
+        showToast('请先完成所有已选音轨的分析', 'warning');
+        return;
+    }
+    setTab(n);
+}
+
+function allSelectedTracksAnalyzed() {
+    return state.selectedTracks.size > 0
+        && [...state.selectedTracks].every(track => isTrackAnalysisComplete(track))
+        && state.analysisRunning.size === 0;
+}
+
+function updateNavigationControls() {
+    const prev = document.getElementById('btn-prev');
+    const next = document.getElementById('btn-next');
+    if (prev) prev.classList.toggle('hidden', state.step <= 1);
+    if (!next) return;
+
+    next.classList.toggle('hidden', state.step >= 4);
+    if (state.step === 1) {
+        next.disabled = !state.hasRawAudio;
+        next.textContent = 'next';
+    } else if (state.step === 2) {
+        next.disabled = !state.separated
+            || state.selectedTracks.size === 0
+            || state.selectionSaving;
+        next.textContent = 'next';
+    } else if (state.step === 3) {
+        next.disabled = !allSelectedTracksAnalyzed();
+        next.textContent = 'next';
+    }
 }
 
 // ══════════════════════════════════════
@@ -416,6 +521,8 @@ async function handleFileUpload(e) {
         const r = await api.uploadAudio(wid, file);
         if (!r.ok) { showToast(`上传失败: ${r.error}`, 'error'); return; }
         showAudioInfo(file.name);
+        state.hasRawAudio = true;
+        updateNavigationControls();
         showToast(`上传完成`, 'success');
         await refreshWorkshopList();
         // 不自动跳转——等用户点「继续」
@@ -469,6 +576,8 @@ async function handleUrlFetch() {
     }
     const info = r.data || r;
     showAudioInfo(info.filename);
+    state.hasRawAudio = true;
+    updateNavigationControls();
     showToast(`下载完成: ${info.name}`, 'success');
     // 侧边栏刷新（车间名已经从视频标题更新）
     await refreshWorkshopList();
@@ -535,7 +644,7 @@ function bindStep2() {
     document.getElementById('btn-run-all')?.addEventListener('click', handleRunAllAnalyses);
 }
 
-function triggerSeparation() {
+async function triggerSeparation() {
     if (!state.currentWid) {
         showToast('请先创建车间', 'warning');
         return;
@@ -546,12 +655,49 @@ function triggerSeparation() {
         showToast('请先在下拉列表中选择分离模型', 'warning');
         return;
     }
+    const wid = state.currentWid;
+    const previous = {
+        separated: state.separated,
+        availableTracks: [...state.availableTracks],
+        selectedTracks: new Set(state.selectedTracks),
+        analysisResults: { ...state.analysisResults },
+        analysisResultPlugins: { ...state.analysisResultPlugins },
+        analyzerSelections: { ...state.analyzerSelections },
+        analysisPendingPlugins: { ...state.analysisPendingPlugins },
+    };
+    state.separating = true;
+    state.separated = false;
+    state.availableTracks = [];
+    state.selectedTracks.clear();
+    state.analysisResults = {};
+    state.analysisResultPlugins = {};
+    state.analyzerSelections = {};
+    state.analysisPendingPlugins = {};
+    state.analysisRunning.clear();
+    cancelAnalysisBatch();
+    renderStemSelection();
+    renderAnalysisConfig();
+    updateNavigationControls();
     // 显示进度环
     document.getElementById('sep-ring-wrap-2')?.classList.remove('hidden');
-    api.separate(state.currentWid, model).then(r => {
-        if (!r.ok) { showToast(`启动分离失败: ${r.error}`, 'error'); return; }
-        showToast('分离任务已启动，等待结果...', 'info');
-    });
+    const r = await api.separate(wid, model);
+    if (state.currentWid !== wid) return;
+    if (!r.ok) {
+        state.separating = false;
+        state.separated = previous.separated;
+        state.availableTracks = previous.availableTracks;
+        state.selectedTracks = previous.selectedTracks;
+        state.analysisResults = previous.analysisResults;
+        state.analysisResultPlugins = previous.analysisResultPlugins;
+        state.analyzerSelections = previous.analyzerSelections;
+        state.analysisPendingPlugins = previous.analysisPendingPlugins;
+        renderStemSelection();
+        renderAnalysisConfig();
+        updateNavigationControls();
+        showToast(`启动分离失败: ${r.error}`, 'error');
+        return;
+    }
+    showToast('分离任务已启动，等待结果...', 'info');
 }
 
 function updateDlProgress(p) {
@@ -577,16 +723,55 @@ function updateSepProgress(p) {
     }
 }
 
-function onSeparationDone() {
+async function onSeparationDone(payload = {}) {
+    const wid = state.currentWid;
+    let tracks = Array.isArray(payload.tracks) ? payload.tracks : [];
+    if (tracks.length === 0 && wid) {
+        const response = await api.getWorkshopState(wid);
+        if (state.currentWid !== wid) return;
+        if (response.ok) {
+            const workshopState = response.data || response;
+            if (workshopState.TabState?.Tab2?.SeparationState !== 'done') {
+                return;
+            }
+            const paths = workshopState.TabState?.Tab2?.TrackAudioFilePath || {};
+            tracks = Object.keys(paths);
+        }
+    }
+    const missingTracks = TRACKS.filter(track => !tracks.includes(track));
+    if (missingTracks.length > 0) {
+        state.separating = false;
+        state.separated = false;
+        state.availableTracks = TRACKS.filter(track => tracks.includes(track));
+        renderStemSelection();
+        updateNavigationControls();
+        showToast(
+            `分离结果不完整，缺少音轨: ${missingTracks.join(', ')}`,
+            'error'
+        );
+        return;
+    }
+
+    state.separating = false;
     state.separated = true;
+    state.selectedTracks.clear();
+    state.analysisResults = {};
+    state.analysisResultPlugins = {};
+    state.analyzerSelections = {};
+    state.analysisPendingPlugins = {};
+    state.availableTracks = TRACKS.filter(track => tracks.includes(track));
+    renderStemSelection();
+    renderAnalysisConfig();
+    updateNavigationControls();
     showToast('分离完成', 'success');
-    // 显示分析配置面板（step-2 phase 2b）
-    const phaseAnalyze = document.getElementById('phase-analyze');
-    if (phaseAnalyze) phaseAnalyze.classList.remove('hidden');
     loadAnalyzerPlugins().then(() => renderAnalysisConfig());
 }
 
 function onSeparationFailed(payload = {}) {
+    state.separating = false;
+    state.separated = false;
+    renderStemSelection();
+    updateNavigationControls();
     const msg = payload.error || 'unknown error';
     showToast(`分离失败: ${msg}`, 'error');
     for (const suffix of ['', '-2']) {
@@ -595,9 +780,89 @@ function onSeparationFailed(payload = {}) {
     }
 }
 
-function onAnalysisStarted(track) {
+function renderStemSelection() {
+    const container = document.getElementById('stem-selection-list');
+    const count = document.getElementById('selected-track-count');
+    if (count) count.textContent = `${state.selectedTracks.size} / ${TRACKS.length}`;
+    if (!container) return;
+
+    if (!state.separated) {
+        const message = state.separating
+            ? '正在分离音轨...'
+            : '完成分离后可选择音轨';
+        container.innerHTML = `<p class="empty-msg compact">${message}</p>`;
+        return;
+    }
+
+    container.innerHTML = TRACKS.map(track => {
+        const available = state.availableTracks.includes(track);
+        const selected = state.selectedTracks.has(track);
+        return `
+            <button type="button"
+                class="stem-row ${selected ? 'selected' : ''}"
+                data-track="${track}"
+                aria-pressed="${selected}"
+                style="--track-color:${TRACK_COLORS[track]}"
+                ${available && !state.selectionSaving ? '' : 'disabled'}>
+                <span class="stem-label" style="color:${TRACK_COLORS[track]}">
+                    ${TRACK_LABELS[track]}
+                </span>
+                <span class="stem-select-indicator" aria-hidden="true"></span>
+            </button>`;
+    }).join('');
+
+    container.querySelectorAll('.stem-row').forEach(row => {
+        row.addEventListener('click', () => toggleTrackSelection(row.dataset.track));
+    });
+}
+
+async function toggleTrackSelection(track) {
+    if (
+        !state.currentWid
+        || !state.separated
+        || state.selectionSaving
+        || !state.availableTracks.includes(track)
+    ) {
+        return;
+    }
+
+    const wid = state.currentWid;
+    const previous = new Set(state.selectedTracks);
+    if (state.selectedTracks.has(track)) {
+        state.selectedTracks.delete(track);
+    } else {
+        state.selectedTracks.add(track);
+    }
+    state.selectionSaving = true;
+    renderStemSelection();
+    renderAnalysisConfig();
+    updateNavigationControls();
+
+    const response = await api.updateSelectedTracks(
+        wid,
+        TRACKS.filter(name => state.selectedTracks.has(name))
+    );
+    if (state.currentWid !== wid) return;
+    state.selectionSaving = false;
+    if (!response.ok) {
+        state.selectedTracks = previous;
+        showToast(`保存音轨选择失败: ${response.error}`, 'error');
+    }
+    renderStemSelection();
+    renderAnalysisConfig();
+    updateNavigationControls();
+}
+
+function onAnalysisStarted(payload = {}) {
+    const track = payload.track;
+    if (!track) return;
+    if (payload.plugin) {
+        state.analysisPendingPlugins[track] = payload.plugin;
+    }
     state.analysisRunning.add(track);
     updateAnalysisCardState(track, 'running');
+    updateAnalysisCompletionCount();
+    updateNavigationControls();
     showToast(`分析 ${track} 已开始...`, 'info');
 }
 
@@ -621,17 +886,33 @@ function onAnalysisDone(payload = {}) {
     const track = payload.track;
     if (!track) return;
     state.analysisRunning.delete(track);
+    const plugin = payload.plugin || state.analysisPendingPlugins[track];
+    delete state.analysisPendingPlugins[track];
     const result = normalizeAnalysisResult(payload.result);
-    if (result) state.analysisResults[track] = result;
-    updateAnalysisCardState(track, 'done');
-    renderAnalysisResults();
+    if (result && plugin) {
+        state.analysisResults[track] = result;
+        state.analysisResultPlugins[track] = plugin;
+    }
+    updateAnalysisCardState(
+        track,
+        isTrackAnalysisComplete(track) ? 'done' : 'idle'
+    );
+    updateAnalysisCompletionCount();
+    updateNavigationControls();
     showToast(`分析 ${track} 完成`, 'success');
+    advanceAnalysisBatch(track);
 }
 
-function onAnalysisFailed(track, error) {
+function onAnalysisFailed(payload = {}) {
+    const track = payload.track;
+    if (!track) return;
     state.analysisRunning.delete(track);
+    delete state.analysisPendingPlugins[track];
     updateAnalysisCardState(track, 'idle');
-    showToast(`分析 ${track} 失败: ${error || '未知错误'}`, 'error');
+    updateAnalysisCompletionCount();
+    updateNavigationControls();
+    showToast(`分析 ${track} 失败: ${payload.error || '未知错误'}`, 'error');
+    advanceAnalysisBatch(track);
 }
 
 // ══════════════════════════════════════
@@ -643,68 +924,152 @@ let _analyzerPlugins = [];
 async function loadAnalyzerPlugins() {
     const r = await api.listAnalyzerPlugins();
     if (r.ok) {
-        _analyzerPlugins = Array.isArray(r) ? r : (r.data || []);
+        const plugins = Array.isArray(r) ? r : (r.data || []);
+        _analyzerPlugins = plugins.filter(
+            plugin => typeof plugin.name === 'string'
+                && plugin.name.startsWith('chord_')
+        );
     }
     return _analyzerPlugins;
+}
+
+function compatibleAnalyzers(track) {
+    return _analyzerPlugins.filter(plugin =>
+        Array.isArray(plugin.input_stems)
+        && plugin.input_stems.includes(track)
+    );
+}
+
+function initializeAnalyzerSelections() {
+    for (const track of TRACKS) {
+        if (!state.selectedTracks.has(track)) continue;
+        const compatible = compatibleAnalyzers(track);
+        const resultPlugin = state.analysisResultPlugins[track];
+        const preferred = compatible.some(p => p.name === resultPlugin)
+            ? resultPlugin
+            : compatible[0]?.name;
+        if (preferred) state.analyzerSelections[track] = preferred;
+    }
+}
+
+function isTrackAnalysisComplete(track) {
+    const selectedPlugin = state.analyzerSelections[track];
+    return !!selectedPlugin
+        && !!state.analysisResults[track]
+        && state.analysisResultPlugins[track] === selectedPlugin
+        && !state.analysisRunning.has(track);
 }
 
 function renderAnalysisConfig() {
     const container = document.getElementById('analysis-config-list');
     if (!container) return;
 
-    const tracks = TRACKS;
+    const tracks = TRACKS.filter(track => state.selectedTracks.has(track));
+    updateAnalysisCompletionCount();
+    const runAll = document.getElementById('btn-run-all');
+    if (runAll) {
+        const hasRunnable = tracks.some(track =>
+            compatibleAnalyzers(track).length > 0
+            && !isTrackAnalysisComplete(track)
+        );
+        runAll.disabled = !hasRunnable
+            || state.analysisRunning.size > 0
+            || state.analysisBatchRunning;
+        runAll.textContent = state.analysisBatchRunning
+            ? 'running batch...'
+            : 'run all selected';
+    }
+    if (tracks.length === 0) {
+        container.innerHTML = '<p class="empty-msg compact">请先在 Tab2 选择音轨</p>';
+        return;
+    }
     if (_analyzerPlugins.length === 0) {
         container.innerHTML = '<p class="empty-msg">no analyzer plugins available</p>';
         return;
     }
 
     container.innerHTML = tracks.map(track => {
-        const opts = _analyzerPlugins.map(p =>
-            `<option value="${p.name}">${p.display_name || p.name}</option>`
+        const compatible = compatibleAnalyzers(track);
+        const selected = state.analyzerSelections[track];
+        const selectedIsCompatible = compatible.some(p => p.name === selected);
+        if (!selectedIsCompatible && compatible.length > 0) {
+            state.analyzerSelections[track] = compatible[0].name;
+        }
+        const activePlugin = state.analyzerSelections[track];
+        const opts = compatible.map(p =>
+            `<option value="${p.name}" ${p.name === activePlugin ? 'selected' : ''}>
+                ${p.display_name || p.name}
+            </option>`
         ).join('');
         const running = state.analysisRunning.has(track);
-        const done = state.analysisResults[track];
+        const done = isTrackAnalysisComplete(track);
+        const unsupported = compatible.length === 0;
+        const queued = state.analysisBatchQueue.some(
+            item => item.track === track
+        );
+        const controlsDisabled = running
+            || unsupported
+            || state.analysisBatchRunning;
         const statusCls = running ? 'running' : (done ? 'done' : '');
         return `
             <div class="analysis-track-card" data-track="${track}">
                 <span class="track-label" style="color:${TRACK_COLORS[track] || '#fff'}">
                     ${TRACK_LABELS[track] || track}
                 </span>
-                <select class="sel-analyzer" data-track="${track}" ${running ? 'disabled' : ''}>
-                    ${opts}
+                <select class="sel-analyzer" data-track="${track}" ${controlsDisabled ? 'disabled' : ''}>
+                    ${unsupported ? '<option value="">no compatible chord analyzer</option>' : opts}
                 </select>
-                <button class="btn-pill-sm btn-run-analysis" data-track="${track}" ${running ? 'disabled' : ''}>
-                    ${running ? 'running...' : (done ? 're-run' : 'run')}
+                <button class="btn-pill-sm btn-run-analysis" data-track="${track}" ${controlsDisabled ? 'disabled' : ''}>
+                    ${unsupported ? 'unavailable' : (running ? 'running...' : (queued ? 'queued' : (done ? 're-run' : 'run')))}
                 </button>
-                <span class="analysis-status ${statusCls}">${running ? '···' : (done ? '✓' : '')}</span>
+                <span class="analysis-status ${unsupported ? 'unsupported' : (queued ? 'queued' : statusCls)}">
+                    ${unsupported ? 'unsupported' : (running ? '···' : (queued ? 'queued' : (done ? 'done' : '')))}
+                </span>
             </div>`;
     }).join('');
 
+    container.querySelectorAll('.sel-analyzer').forEach(sel => {
+        sel.addEventListener('change', () => {
+            state.analyzerSelections[sel.dataset.track] = sel.value;
+            renderAnalysisConfig();
+            updateNavigationControls();
+        });
+    });
     container.querySelectorAll('.btn-run-analysis').forEach(btn => {
         btn.addEventListener('click', () => handleRunAnalysis(btn.dataset.track));
     });
 }
 
-async function handleRunAnalysis(track) {
-    if (!state.currentWid) return;
-    if (state.analysisRunning.has(track)) return;
+async function handleRunAnalysis(track, pluginOverride = null) {
+    if (!state.currentWid) return false;
+    if (state.analysisRunning.has(track)) return false;
 
     const sel = document.querySelector(`.sel-analyzer[data-track="${track}"]`);
-    const plugin = sel?.value;
+    const plugin = pluginOverride || sel?.value;
     if (!plugin) {
         showToast(`请先为 ${track} 选择分析工具`, 'warning');
-        return;
+        return false;
     }
 
+    const wid = state.currentWid;
+    state.analyzerSelections[track] = plugin;
+    state.analysisPendingPlugins[track] = plugin;
+    delete state.analysisResults[track];
+    delete state.analysisResultPlugins[track];
     state.analysisRunning.add(track);
     updateAnalysisCardState(track, 'running');
+    updateNavigationControls();
 
-    const r = await api.analyze(state.currentWid, track, plugin);
+    const r = await api.analyze(wid, track, plugin);
+    if (state.currentWid !== wid) return false;
     if (!r.ok) {
         state.analysisRunning.delete(track);
+        delete state.analysisPendingPlugins[track];
         updateAnalysisCardState(track, 'idle');
         showToast(`启动分析失败: ${r.error}`, 'error');
+        return false;
     }
+    return true;
 }
 
 function updateAnalysisCardState(track, st) {
@@ -721,57 +1086,89 @@ function updateAnalysisCardState(track, st) {
     } else if (st === 'done') {
         if (btn) { btn.textContent = 're-run'; btn.disabled = false; }
         if (sel) sel.disabled = false;
-        if (status) { status.textContent = '✓'; status.className = 'analysis-status done'; }
+        if (status) { status.textContent = 'done'; status.className = 'analysis-status done'; }
     } else {
         if (btn) { btn.textContent = 'run'; btn.disabled = false; }
         if (sel) sel.disabled = false;
         if (status) { status.textContent = ''; status.className = 'analysis-status'; }
     }
+    updateAnalysisCompletionCount();
+    updateNavigationControls();
 }
 
-function renderAnalysisResults() {
-    const container = document.getElementById('analysis-results-list');
-    if (!container) return;
+function updateAnalysisCompletionCount() {
+    const selected = TRACKS.filter(track => state.selectedTracks.has(track));
+    const completed = selected.filter(track => isTrackAnalysisComplete(track)).length;
+    const count = document.getElementById('analysis-complete-count');
+    if (count) count.textContent = `${completed} / ${selected.length}`;
+}
 
-    const results = Object.entries(state.analysisResults);
-    if (results.length === 0) {
-        container.innerHTML = '<p class="empty-msg">no analysis results yet — run analysis in Tab2</p>';
+function cancelAnalysisBatch() {
+    state.analysisBatchQueue = [];
+    state.analysisBatchCurrent = null;
+    state.analysisBatchRunning = false;
+}
+
+function advanceAnalysisBatch(track) {
+    if (
+        !state.analysisBatchRunning
+        || state.analysisBatchCurrent !== track
+    ) {
+        return;
+    }
+    state.analysisBatchCurrent = null;
+    void startNextBatchAnalysis();
+}
+
+async function startNextBatchAnalysis() {
+    if (
+        !state.analysisBatchRunning
+        || state.analysisBatchCurrent !== null
+    ) {
         return;
     }
 
-    container.innerHTML = results.map(([track, result]) => {
-        const chords = result?.chords || result?.chord_labels || [];
-        const bpm = result?.bpm || result?.global_bpm || '';
-        const keyStr = result?.key || '';
-        const chordStr = Array.isArray(chords) && chords.length > 0
-            ? chords.slice(0, 8).map(c => c.name || c.chord || '').filter(Boolean).join(' → ')
-              + (chords.length > 8 ? ' …' : '')
-            : '';
-        return `
-            <div class="result-track-card">
-                <div class="result-track-header">
-                    <span class="result-track-label" style="color:${TRACK_COLORS[track] || '#fff'}">
-                        ${TRACK_LABELS[track] || track}
-                    </span>
-                    <span class="result-meta">${bpm ? 'BPM ' + bpm : ''} ${keyStr ? '· Key ' + keyStr : ''}</span>
-                </div>
-                <div class="result-chords">${chordStr || '<span class="muted">no chord data in result</span>'}</div>
-            </div>`;
-    }).join('');
+    const next = state.analysisBatchQueue.shift();
+    if (!next) {
+        state.analysisBatchRunning = false;
+        renderAnalysisConfig();
+        updateNavigationControls();
+        showToast('所有已选音轨分析完成', 'success');
+        return;
+    }
+
+    state.analysisBatchCurrent = next.track;
+    renderAnalysisConfig();
+    const launched = await handleRunAnalysis(next.track, next.plugin);
+    if (!launched && state.analysisBatchCurrent === next.track) {
+        state.analysisBatchCurrent = null;
+        void startNextBatchAnalysis();
+    }
 }
 
 async function handleRunAllAnalyses() {
-    if (!state.currentWid) return;
-    const cards = document.querySelectorAll('.analysis-track-card');
-    for (const card of cards) {
+    if (!state.currentWid || state.analysisBatchRunning) return;
+    const cards = [...document.querySelectorAll('.analysis-track-card')];
+    state.analysisBatchQueue = cards.flatMap(card => {
         const track = card.dataset.track;
-        if (state.analysisRunning.has(track)) continue;
-        if (state.analysisResults[track]) continue;
-        const sel = card.querySelector('.sel-analyzer');
-        if (!sel?.value) continue;
-        await handleRunAnalysis(track);
-    }
-    showToast('分析任务已全部启动，等待 SSE 进度...', 'info');
+        const plugin = card.querySelector('.sel-analyzer')?.value;
+        if (
+            !plugin
+            || state.analysisRunning.has(track)
+            || isTrackAnalysisComplete(track)
+        ) {
+            return [];
+        }
+        return [{ track, plugin }];
+    });
+    if (state.analysisBatchQueue.length === 0) return;
+
+    state.analysisBatchRunning = true;
+    state.analysisBatchCurrent = null;
+    renderAnalysisConfig();
+    updateNavigationControls();
+    showToast('已按顺序启动批量分析', 'info');
+    await startNextBatchAnalysis();
 }
 
 // ══════════════════════════════════════
@@ -781,46 +1178,462 @@ async function handleRunAllAnalyses() {
 function bindPlayback() {
     document.getElementById('btn-play')?.addEventListener('click', togglePlay);
     document.getElementById('seek-bar')?.addEventListener('input', onSeek);
-    document.getElementById('btn-prev')?.addEventListener('click', () => setTab(Math.max(1, state.step - 1)));
-    document.getElementById('btn-next')?.addEventListener('click', () => setTab(Math.min(4, state.step + 1)));
-    document.getElementById('btn-continue-tab2')?.addEventListener('click', () => setTab(2));
+    document.getElementById('btn-prev')?.addEventListener('click', () => requestTab(Math.max(1, state.step - 1)));
+    document.getElementById('btn-next')?.addEventListener('click', () => requestTab(Math.min(4, state.step + 1)));
+    document.getElementById('btn-continue-tab2')?.addEventListener('click', () => requestTab(2));
+    document.getElementById('tab4-zoom')?.addEventListener('input', event => {
+        setTab4Zoom(event.target.value);
+    });
+    document.getElementById('btn-zoom-out')?.addEventListener('click', () => {
+        setTab4Zoom(state.timelineZoom - 0.5);
+    });
+    document.getElementById('btn-zoom-in')?.addEventListener('click', () => {
+        setTab4Zoom(state.timelineZoom + 0.5);
+    });
+    document.getElementById('tab4-zoom-label')?.addEventListener('click', () => {
+        setTab4Zoom(1);
+    });
+    document.getElementById('btn-export-midi')?.addEventListener(
+        'click',
+        exportSelectedTracksMidi
+    );
+    window.addEventListener('resize', () => {
+        if (state.step === 4) applyTab4Zoom();
+    });
 }
 
 function bindSpeedCycle() {
-    let speeds = [0.5, 1, 1.5, 2];
-    let idx = 1;
+    const speeds = [0.5, 1, 1.5, 2];
     const label = document.getElementById('speed-label');
     document.addEventListener('keydown', (e) => {
-        if (e.key === ' ' && e.target.tagName !== 'INPUT') { togglePlay(); e.preventDefault(); }
+        const tag = e.target?.tagName;
+        if (
+            e.key === ' '
+            && state.step === 4
+            && !['INPUT', 'SELECT', 'TEXTAREA', 'BUTTON'].includes(tag)
+        ) {
+            void togglePlay();
+            e.preventDefault();
+        }
     });
-    label?.parentElement?.addEventListener('click', () => {
-        idx = (idx + 1) % speeds.length;
-        label.textContent = `x${speeds[idx]}`;
+    label?.addEventListener('click', () => {
+        const currentIndex = speeds.indexOf(state.speed);
+        state.speed = speeds[(currentIndex + 1) % speeds.length];
+        for (const audio of state.audioElements.values()) {
+            audio.playbackRate = state.speed;
+        }
+        label.textContent = `x${state.speed}`;
     });
 }
 
-function togglePlay() {
-    if (!state.currentWid) return;
-    state.playing = !state.playing;
+async function loadTab4() {
+    const wid = state.currentWid;
+    const tracks = TRACKS.filter(track => state.selectedTracks.has(track));
+    const container = document.getElementById('tab4-track-list');
+    const count = document.getElementById('tab4-track-count');
+    if (!container || !wid) return;
+
+    destroyTab4Playback();
+    const loadToken = state.tab4LoadToken;
+    state.trackVizData = {};
+    state.currentTime = 0;
+    state.duration = 0;
+    if (count) count.textContent = `${tracks.length} tracks`;
+    if (tracks.length === 0) {
+        container.innerHTML = '<p class="empty-msg">Tab2 尚未选择音轨</p>';
+        updatePlaybackUi();
+        return;
+    }
+
+    container.innerHTML = '<p class="empty-msg">正在加载音轨时间轴...</p>';
+    const responses = await Promise.all(
+        tracks.map(async track => ({
+            track,
+            response: await api.getVisualization(wid, track),
+        }))
+    );
+    if (
+        state.currentWid !== wid
+        || state.step !== 4
+        || state.tab4LoadToken !== loadToken
+    ) {
+        return;
+    }
+
+    const errors = {};
+    for (const { track, response } of responses) {
+        if (!response.ok) {
+            errors[track] = response.error || '加载失败';
+            continue;
+        }
+        const data = response.data || response;
+        state.trackVizData[track] = data;
+        state.duration = Math.max(
+            state.duration,
+            Number(data.metadata?.duration || data.waveform?.duration || 0)
+        );
+    }
+
+    renderTab4Tracks(tracks, errors);
+    createTab4AudioElements(wid, tracks);
+    updatePlaybackBounds();
+    updatePlaybackUi();
+    updateMidiExportButton();
+}
+
+function renderTab4Tracks(tracks, errors = {}) {
+    const container = document.getElementById('tab4-track-list');
+    if (!container) return;
+    container.replaceChildren();
+
+    for (const track of tracks) {
+        if (errors[track]) {
+            const errorRow = document.createElement('div');
+            errorRow.className = 'tab4-track-error';
+            errorRow.textContent = `${TRACK_LABELS[track]}: ${errors[track]}`;
+            container.appendChild(errorRow);
+            continue;
+        }
+
+        const data = state.trackVizData[track];
+        const row = document.createElement('div');
+        row.className = 'tab4-track-row';
+        row.dataset.track = track;
+        row.style.setProperty('--track-color', TRACK_COLORS[track]);
+
+        const label = document.createElement('div');
+        label.className = 'tab4-track-label';
+        label.textContent = TRACK_LABELS[track] || track;
+
+        const content = document.createElement('div');
+        content.className = 'tab4-time-content';
+        content.addEventListener('click', event => {
+            const rect = content.getBoundingClientRect();
+            if (rect.width <= 0) return;
+            const proportion = Math.max(
+                0,
+                Math.min(1, (event.clientX - rect.left) / rect.width)
+            );
+            setPlaybackTime(proportion * state.duration);
+        });
+
+        const waveformLayer = document.createElement('div');
+        waveformLayer.className = 'tab4-waveform-layer';
+        const canvas = document.createElement('canvas');
+        canvas.dataset.track = track;
+        waveformLayer.appendChild(canvas);
+
+        const chordLayer = document.createElement('div');
+        chordLayer.className = 'tab4-chord-layer';
+        renderChordBlocks(
+            chordLayer,
+            data?.chords || [],
+            state.duration
+        );
+
+        const playhead = document.createElement('div');
+        playhead.className = 'tab4-playhead';
+
+        content.append(waveformLayer, chordLayer, playhead);
+        row.append(label, content);
+        container.appendChild(row);
+    }
+    applyTab4Zoom();
+}
+
+function renderChordBlocks(layer, chords, duration) {
+    layer.replaceChildren();
+    const validChords = Array.isArray(chords)
+        ? chords.filter(chord =>
+            Number.isFinite(Number(chord.start))
+            && Number.isFinite(Number(chord.end))
+            && Number(chord.end) > Number(chord.start)
+        )
+        : [];
+    if (validChords.length === 0 || duration <= 0) {
+        const empty = document.createElement('div');
+        empty.className = 'tab4-chord-empty';
+        empty.textContent = 'no chord data';
+        layer.appendChild(empty);
+        return;
+    }
+
+    for (const chord of validChords) {
+        const start = Math.max(0, Number(chord.start));
+        const end = Math.min(duration, Number(chord.end));
+        if (end <= start) continue;
+        const block = document.createElement('div');
+        block.className = 'tab4-chord-block';
+        block.style.left = `${(start / duration) * 100}%`;
+        block.style.width = `${((end - start) / duration) * 100}%`;
+        block.textContent = chord.name || chord.chord || '?';
+        block.title = `${block.textContent}  ${formatTime(start)} - ${formatTime(end)}`;
+        layer.appendChild(block);
+    }
+}
+
+function renderTab4Waveforms() {
+    document.querySelectorAll('#tab4-track-list canvas[data-track]').forEach(
+        canvas => {
+            const track = canvas.dataset.track;
+            const peaks = state.trackVizData[track]?.waveform?.peaks || [];
+            drawWaveform(canvas, peaks, {
+                color: TRACK_COLORS[track] || '#5b65ff',
+                bgColor: '#050505',
+            });
+        }
+    );
+    updateTab4Playheads();
+}
+
+function setTab4Zoom(value) {
+    state.timelineZoom = clampTimelineZoom(value);
+    syncTab4ZoomControls();
+    applyTab4Zoom();
+}
+
+function syncTab4ZoomControls() {
+    const slider = document.getElementById('tab4-zoom');
+    const label = document.getElementById('tab4-zoom-label');
+    if (slider) slider.value = String(state.timelineZoom);
+    if (label) label.textContent = `${state.timelineZoom}x`;
+}
+
+function applyTab4Zoom() {
+    const container = document.getElementById('tab4-track-list');
+    const firstLabel = container?.querySelector('.tab4-track-label');
+    if (!container || !firstLabel) return;
+    const labelWidth = firstLabel.getBoundingClientRect().width || 96;
+    const layout = calculateTimelineLayout({
+        viewportWidth: container.clientWidth,
+        labelWidth,
+        zoom: state.timelineZoom,
+        currentTime: state.currentTime,
+        duration: state.duration,
+    });
+    container.style.setProperty(
+        '--tab4-content-width',
+        `${layout.contentWidth}px`
+    );
+    renderTab4Waveforms();
+    requestAnimationFrame(() => {
+        container.scrollLeft = layout.scrollLeft;
+    });
+}
+
+async function exportSelectedTracksMidi() {
+    const tracks = TRACKS.filter(track => state.selectedTracks.has(track));
+    if (!state.currentWid || tracks.length === 0) {
+        showToast('没有可导出的已选音轨', 'warning');
+        return;
+    }
+    const button = document.getElementById('btn-export-midi');
+    if (button) {
+        button.disabled = true;
+        button.textContent = 'exporting...';
+    }
+    const response = await api.exportMidi(state.currentWid, tracks);
+    if (!response.ok) {
+        showToast(`MIDI 导出失败: ${response.error}`, 'error');
+        updateMidiExportButton();
+        return;
+    }
+
+    const url = URL.createObjectURL(response.blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = response.filename;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 0);
+    showToast('MIDI 已导出', 'success');
+    updateMidiExportButton();
+}
+
+function updateMidiExportButton() {
+    const button = document.getElementById('btn-export-midi');
+    if (!button) return;
+    button.textContent = 'export MIDI';
+    button.disabled = state.selectedTracks.size === 0
+        || !allSelectedTracksAnalyzed();
+}
+
+function createTab4AudioElements(wid, tracks) {
+    for (const track of tracks) {
+        const audio = document.createElement('audio');
+        audio.preload = 'auto';
+        audio.src = api.getAudioURL(wid, track);
+        audio.playbackRate = state.speed;
+        audio.addEventListener('loadedmetadata', () => {
+            if (Number.isFinite(audio.duration)) {
+                state.duration = Math.max(state.duration, audio.duration);
+                updatePlaybackBounds();
+                updatePlaybackUi();
+            }
+        });
+        audio.addEventListener('ended', () => {
+            const allEnded = [...state.audioElements.values()].every(
+                item => item.ended || item.paused
+            );
+            if (allEnded) {
+                state.currentTime = state.duration;
+                pausePlayback();
+                updatePlaybackUi();
+            }
+        });
+        audio.load();
+        state.audioElements.set(track, audio);
+    }
+}
+
+function destroyTab4Playback() {
+    state.tab4LoadToken += 1;
+    pausePlayback();
+    for (const audio of state.audioElements.values()) {
+        audio.removeAttribute('src');
+        audio.load();
+    }
+    state.audioElements.clear();
+    state.currentTime = 0;
+}
+
+async function togglePlay() {
+    if (!state.currentWid || state.step !== 4) return;
+    if (state.playing) {
+        pausePlayback();
+        return;
+    }
+    const audios = [...state.audioElements.values()];
+    if (audios.length === 0) {
+        showToast('没有可播放的已选音轨', 'warning');
+        return;
+    }
+    if (state.currentTime >= state.duration - 0.02) {
+        setPlaybackTime(0);
+    } else {
+        synchronizeAudioTime(state.currentTime);
+    }
+
+    const results = await Promise.allSettled(
+        audios.map(audio => {
+            audio.playbackRate = state.speed;
+            return audio.play();
+        })
+    );
+    if (!results.some(result => result.status === 'fulfilled')) {
+        showToast('音轨播放失败，请检查音频文件', 'error');
+        return;
+    }
+    state.playing = true;
+    state.lastTs = performance.now();
     updatePlayButton();
-    if (state.playing) requestAnimationFrame(tick);
+    state.raf = requestAnimationFrame(tick);
 }
 
-function onSeek(e) {
-    if (!state.currentWid) return;
-    // 占位：未来把 seek 发到 kernel.player.seek()
+function pausePlayback() {
+    state.playing = false;
+    for (const audio of state.audioElements.values()) audio.pause();
+    if (state.raf) cancelAnimationFrame(state.raf);
+    state.raf = null;
+    updatePlayButton();
+}
+
+function onSeek(event) {
+    if (!state.currentWid || state.step !== 4) return;
+    setPlaybackTime(Number(event.target.value));
+}
+
+function setPlaybackTime(time) {
+    state.currentTime = Math.max(
+        0,
+        Math.min(state.duration || 0, Number(time) || 0)
+    );
+    synchronizeAudioTime(state.currentTime);
+    updatePlaybackUi();
+}
+
+function synchronizeAudioTime(time) {
+    for (const audio of state.audioElements.values()) {
+        try {
+            audio.currentTime = Math.min(
+                time,
+                Number.isFinite(audio.duration) ? audio.duration : time
+            );
+        } catch (_) {
+            // Metadata may still be loading; loadedmetadata will catch up.
+        }
+    }
+}
+
+function updatePlaybackBounds() {
+    const seek = document.getElementById('seek-bar');
+    if (!seek) return;
+    seek.max = String(Math.max(0, state.duration));
+}
+
+function updatePlaybackUi() {
+    const seek = document.getElementById('seek-bar');
+    const display = document.getElementById('time-display');
+    if (seek) seek.value = String(state.currentTime);
+    if (display) {
+        display.textContent =
+            `${formatTime(state.currentTime)} / ${formatTime(state.duration)}`;
+    }
+    updateTab4Playheads();
+    updatePlayButton();
+}
+
+function updateTab4Playheads() {
+    const proportion = state.duration > 0
+        ? Math.max(0, Math.min(1, state.currentTime / state.duration))
+        : 0;
+    document.querySelectorAll('.tab4-playhead').forEach(playhead => {
+        playhead.style.left = `${proportion * 100}%`;
+    });
 }
 
 function updatePlayButton() {
-    document.getElementById('btn-play')?.classList.toggle('playing', state.playing);
+    const button = document.getElementById('btn-play');
+    if (!button) return;
+    button.classList.toggle('playing', state.playing);
+    button.setAttribute('aria-label', state.playing ? '暂停' : '播放');
+    button.innerHTML = state.playing
+        ? '<svg width="18" height="18" viewBox="0 0 16 16" fill="currentColor"><rect x="3" y="2" width="3.5" height="12"/><rect x="9.5" y="2" width="3.5" height="12"/></svg>'
+        : '<svg width="18" height="18" viewBox="0 0 16 16" fill="currentColor"><path d="M4 2.5v11l9-5.5z"/></svg>';
 }
 
 function tick(ts) {
     if (!state.playing) return;
-    state.currentTime = (state.currentTime + (ts - (state.lastTs || ts)) / 1000 * state.speed) % state.duration;
+    const audios = [...state.audioElements.values()];
+    const master = audios.find(audio => !audio.paused && !audio.ended);
+    if (master) {
+        state.currentTime = master.currentTime;
+        for (const audio of audios) {
+            if (
+                audio !== master
+                && !audio.paused
+                && Math.abs(audio.currentTime - state.currentTime) > 0.12
+            ) {
+                audio.currentTime = state.currentTime;
+            }
+        }
+    } else {
+        const elapsed = (ts - (state.lastTs || ts)) / 1000 * state.speed;
+        state.currentTime = Math.min(state.duration, state.currentTime + elapsed);
+    }
     state.lastTs = ts;
-    drawPlayhead(state.currentTime);
-    document.getElementById('time-display').textContent =
-        `${Math.floor(state.currentTime / 60)}:${String(Math.floor(state.currentTime % 60)).padStart(2, '0')}`;
-    requestAnimationFrame(tick);
+    updatePlaybackUi();
+    if (state.currentTime >= state.duration) {
+        pausePlayback();
+        return;
+    }
+    state.raf = requestAnimationFrame(tick);
+}
+
+function formatTime(seconds) {
+    const safe = Math.max(0, Number(seconds) || 0);
+    const minutes = Math.floor(safe / 60);
+    const secs = Math.floor(safe % 60);
+    return `${minutes}:${String(secs).padStart(2, '0')}`;
 }

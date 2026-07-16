@@ -318,13 +318,14 @@ html, body {
    Step 2: SELECT
    ════════════════════════════════════════ */
 
-#phase-separate, #phase-analyze {
+.tab-workflow-panel {
     flex: 1;
     display: flex;
     flex-direction: column;
     align-items: center;
-    padding: 24px;
+    padding: 36px 24px;
     position: relative;
+    width: 100%;
 }
 
 .top-right-abs {
@@ -342,59 +343,77 @@ html, body {
     letter-spacing: 0.5px;
 }
 
-/* 音轨网格 2x3 */
-.stem-grid-2x3 {
-    display: grid;
-    grid-template-columns: repeat(3, 1fr);
-    gap: 12px;
-    max-width: 560px;
-    width: 100%;
-}
-.stem-square {
-    aspect-ratio: 1;
-    border: 1px solid var(--border-dim);
+/* Tab2 音轨多选列表 */
+.section-heading {
     display: flex;
-    flex-direction: column;
+    justify-content: space-between;
     align-items: center;
-    justify-content: center;
-    gap: 8px;
-    cursor: pointer;
-    transition: border-color 0.15s, background 0.15s;
-    position: relative;
-    min-height: 120px;
-}
-.stem-square:hover { border-color: var(--text); }
-.stem-square.selected {
-    border-color: var(--accent);
-    background: rgba(91,101,255,0.06);
-}
-.stem-square .stem-label {
+    max-width: 720px;
+    width: 100%;
+    margin: 24px 0 12px;
+    color: var(--text);
     font-size: 13px;
     font-weight: 600;
-    letter-spacing: 1px;
+}
+.selection-count {
+    color: var(--text-dim);
+    font-size: 11px;
+    font-variant-numeric: tabular-nums;
+}
+.stem-selection-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    max-width: 720px;
+    width: 100%;
+}
+.stem-row {
+    width: 100%;
+    min-height: 62px;
+    padding: 0 20px;
+    border: 1px solid var(--border-dim);
+    background: transparent;
+    color: var(--text);
+    font-family: var(--font);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    cursor: pointer;
+    transition: border-color 0.15s, background 0.15s, box-shadow 0.15s;
+    position: relative;
+}
+.stem-row:hover:not(:disabled) { border-color: var(--text); }
+.stem-row.selected {
+    border-color: var(--text);
+    background: rgba(255,255,255,0.05);
+    box-shadow: inset 5px 0 0 var(--track-color), inset -5px 0 0 var(--track-color);
+}
+.stem-row:disabled {
+    cursor: default;
+    opacity: 0.35;
+}
+.stem-row .stem-label {
+    font-size: 13px;
+    font-weight: 600;
     text-transform: uppercase;
 }
-.stem-square .stem-check {
-    position: absolute;
-    top: 8px;
-    right: 8px;
-    width: 16px;
-    height: 16px;
+.stem-row .stem-select-indicator {
+    width: 20px;
+    height: 20px;
     border: 1px solid var(--border-dim);
     display: flex;
     align-items: center;
     justify-content: center;
-    transition: border-color 0.15s, background 0.15s;
 }
-.stem-square.selected .stem-check {
-    border-color: var(--accent);
-    background: var(--accent);
+.stem-row.selected .stem-select-indicator {
+    border-color: var(--text);
+    background: var(--text);
 }
-.stem-square.selected .stem-check::after {
+.stem-row.selected .stem-select-indicator::after {
     content: '';
     width: 5px;
     height: 8px;
-    border: 1.5px solid #fff;
+    border: 1.5px solid #000;
     border-top: none;
     border-left: none;
     transform: rotate(45deg) translate(-1px, -1px);
@@ -495,119 +514,167 @@ html, body {
 }
 
 /* ════════════════════════════════════════
-   Step 3: OUTPUT (Timeline)
+   Tab4: selected-track timeline
    ════════════════════════════════════════ */
 
-.timeline-container {
-    flex: 1;
-    border: 1px solid var(--border);
-    margin: 0;
-    overflow-y: auto;
+.tab4-timeline {
+    height: 100%;
+    min-height: 0;
     display: flex;
     flex-direction: column;
+    padding: 14px 18px 18px;
 }
-
-.track-timeline-list {
+.tab4-heading {
+    min-height: 34px;
     display: flex;
-    flex-direction: column;
-    flex: 1;
-}
-.empty-msg {
+    align-items: center;
+    justify-content: space-between;
     font-size: 12px;
-    color: var(--text-dim);
-    text-align: center;
-    padding: 48px 0;
-    flex: 1;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-}
-
-.track-row {
-    display: flex;
-    border-bottom: 1px solid var(--border-dim);
-    min-height: 72px;
-}
-.track-row:last-child { border-bottom: none; }
-
-/* 左侧标签 */
-.track-label {
-    width: 80px;
-    min-width: 80px;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    gap: 6px;
-    border-right: 1px solid var(--border-dim);
+    font-weight: 600;
     flex-shrink: 0;
+    gap: 16px;
 }
-.track-label .t-name {
-    font-size: 10px;
-    font-weight: 700;
-    letter-spacing: 1px;
-    text-transform: uppercase;
-    writing-mode: vertical-lr;
-    text-orientation: mixed;
-    color: var(--text-dim);
-}
-.track-label .vol-slider {
-    writing-mode: vertical-lr;
-    direction: rtl;
-    width: 3px;
-    height: 36px;
-    -webkit-appearance: none;
-    appearance: none;
-    background: var(--border-dim);
-    outline: none;
-}
-.track-label .vol-slider::-webkit-slider-thumb {
-    -webkit-appearance: none;
-    width: 10px;
-    height: 10px;
-    background: var(--accent);
-    border-radius: 50%;
-    cursor: pointer;
-}
-
-/* 右侧内容 */
-.track-content {
-    flex: 1;
+.tab4-heading-copy,
+.tab4-heading-actions,
+.tab4-zoom-controls {
     display: flex;
-    flex-direction: column;
+    align-items: center;
+}
+.tab4-heading-copy {
+    gap: 12px;
     min-width: 0;
 }
-.track-waveform {
-    flex: 1;
+.tab4-heading-actions {
+    gap: 12px;
+}
+.tab4-zoom-controls {
+    gap: 6px;
+}
+.btn-icon-square {
+    width: 26px;
+    height: 26px;
+    padding: 0;
+    border: 1px solid var(--border);
+    background: transparent;
+    color: var(--text);
+    font: 600 16px/1 var(--font);
+    cursor: pointer;
+}
+.btn-icon-square:hover {
+    border-color: var(--text-dim);
+}
+.tab4-zoom {
+    width: 112px;
+    accent-color: var(--accent);
+    cursor: pointer;
+}
+.tab4-zoom-label {
+    width: 42px;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    color: var(--text-dim);
+    font: 11px/1 var(--font);
+    cursor: pointer;
+}
+.btn-export-midi {
+    width: auto;
+    min-width: 112px;
+    padding: 7px 14px;
+    white-space: nowrap;
+}
+.tab4-track-list {
+    min-height: 0;
+    overflow: auto;
+    border: 1px solid var(--border);
+}
+.tab4-track-row {
+    display: grid;
+    grid-template-columns: 96px var(--tab4-content-width, calc(100% - 96px));
+    width: max-content;
+    min-width: 100%;
+    min-height: 136px;
+    border-bottom: 1px solid var(--border);
+}
+.tab4-track-row:last-child { border-bottom: 0; }
+.tab4-track-label {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-right: 1px solid var(--border);
+    font-size: 12px;
+    font-weight: 700;
+    text-transform: uppercase;
+    position: sticky;
+    left: 0;
+    z-index: 6;
+    background: var(--bg);
+}
+.tab4-time-content {
+    min-width: 0;
     position: relative;
     cursor: pointer;
-    min-height: 40px;
 }
-.track-waveform canvas {
+.tab4-waveform-layer {
+    height: 78px;
+    border-bottom: 1px solid var(--border);
+    background: #050505;
+}
+.tab4-waveform-layer canvas {
     display: block;
     width: 100%;
     height: 100%;
 }
-.track-chords {
-    height: 20px;
-    display: flex;
-    align-items: center;
-    border-top: 1px solid var(--border-dim);
-    overflow: hidden;
+.tab4-chord-layer {
+    height: 56px;
     position: relative;
+    overflow: hidden;
+    background: #000;
 }
-.chord-block {
-    height: 100%;
+.tab4-chord-block {
+    position: absolute;
+    top: 5px;
+    bottom: 5px;
+    min-width: 2px;
     display: flex;
     align-items: center;
     justify-content: center;
-    font-size: 9px;
-    font-weight: 600;
+    overflow: hidden;
+    padding: 0 8px;
+    border-right: 2px solid #000;
+    background: #10213a;
+    box-shadow: inset 0 3px 0 var(--track-color);
     color: var(--text);
-    background: rgba(91,101,255,0.15);
-    border-right: 1px solid var(--border-dim);
-    letter-spacing: 0.3px;
-    flex-shrink: 0;
+    font-size: 11px;
+    font-weight: 600;
+    white-space: nowrap;
+}
+.tab4-chord-empty {
+    height: 100%;
+    display: flex;
+    align-items: center;
+    padding-left: 12px;
+    color: var(--text-dim);
+    font-size: 10px;
+}
+.tab4-playhead {
+    position: absolute;
+    z-index: 4;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    width: 1px;
+    background: var(--red);
+    pointer-events: none;
+    transform: translateX(-0.5px);
+}
+.tab4-track-error {
+    min-height: 136px;
+    display: flex;
+    align-items: center;
+    padding: 20px;
+    color: var(--red);
+    border-bottom: 1px solid var(--border);
 }
 
 /* ════════════════════════════════════════
@@ -636,10 +703,12 @@ html, body {
     align-items: center;
     gap: 12px;
     flex: 1;
-    justify-content: center;
+    justify-content: flex-end;
+    min-width: 0;
 }
 .seek-bar {
-    width: 200px;
+    width: min(52vw, 720px);
+    min-width: 160px;
     height: 2px;
     -webkit-appearance: none;
     appearance: none;
@@ -659,7 +728,8 @@ html, body {
     font-size: 11px;
     color: var(--text-dim);
     font-variant-numeric: tabular-nums;
-    min-width: 80px;
+    min-width: 108px;
+    text-align: right;
 }
 .btn-play {
     width: 36px;
@@ -680,6 +750,8 @@ html, body {
     font-size: 11px;
     color: var(--text-dim);
     cursor: pointer;
+    min-width: 28px;
+    text-align: center;
 }
 
 /* ════════════════════════════════════════
@@ -754,8 +826,9 @@ body.busy { cursor: wait; }
 /* ════════════════════════════════════════
    Tab4 additions
    ════════════════════════════════════════ */
-.btn-run-all { margin-top: 20px; max-width: 560px; }
+.btn-run-all { margin-top: 20px; max-width: 720px; }
 .empty-msg { color: var(--text-dim); font-size: 14px; text-align: center; margin-top: 80px; }
+.empty-msg.compact { margin: 32px 0; }
 
 /* download progress bar */
 .dl-progress-wrap { display: flex; align-items: center; gap: 10px; margin-top: 12px; }
@@ -770,7 +843,8 @@ body.busy { cursor: wait; }
     flex-direction: column;
     gap: 10px;
     margin-top: 12px;
-    max-width: 560px;
+    max-width: 720px;
+    width: 100%;
 }
 .analysis-track-card {
     display: flex;
@@ -779,7 +853,7 @@ body.busy { cursor: wait; }
     padding: 10px 14px;
     border: 1px solid var(--border-dim);
     border-radius: 6px;
-    background: var(--surface);
+    background: transparent;
 }
 .analysis-track-card .track-label {
     font-weight: 600;
@@ -799,51 +873,165 @@ body.busy { cursor: wait; }
 }
 .analysis-status {
     font-size: 12px;
-    min-width: 20px;
+    min-width: 72px;
     text-align: center;
 }
 .analysis-status.running { color: var(--accent); }
 .analysis-status.done { color: #34c759; }
+.analysis-status.queued { color: var(--text-dim); }
+.analysis-status.unsupported { color: var(--red); }
 
-/* Tab3 results */
-.analysis-results-container {
-    padding: 20px;
-    max-width: 800px;
+@media (max-width: 860px) {
+    :root {
+        --sidebar-w: 180px;
+    }
+
+    #step-bar {
+        gap: 8px;
+        padding: 0 8px;
+    }
+
+    .step-indicator {
+        padding: 5px 8px;
+        font-size: 10px;
+    }
+
+    .sep-model-row {
+        width: 100%;
+        max-width: 720px;
+        flex-wrap: wrap;
+    }
+
+    .sel-separator {
+        min-width: 220px;
+        max-width: none;
+    }
+
+    .analysis-track-card {
+        display: grid;
+        grid-template-columns: minmax(76px, auto) minmax(0, 1fr) auto auto;
+    }
+
+    .tab4-timeline {
+        padding: 10px;
+    }
+
+    .tab4-track-row {
+        grid-template-columns: 72px var(--tab4-content-width, calc(100% - 72px));
+    }
+
+    .tab4-track-list {
+        overflow: auto;
+    }
+
+    .seek-bar {
+        width: min(42vw, 520px);
+    }
+
+    .tab4-heading {
+        align-items: flex-start;
+    }
+
+    .tab4-heading-actions {
+        flex-wrap: wrap;
+        justify-content: flex-end;
+    }
 }
-.analysis-results-list {
-    display: flex;
-    flex-direction: column;
-    gap: 14px;
-}
-.result-track-card {
-    border: 1px solid var(--border-dim);
-    border-radius: 6px;
-    padding: 14px 18px;
-    background: var(--surface);
-}
-.result-track-header {
-    display: flex;
-    align-items: baseline;
-    gap: 12px;
-    margin-bottom: 8px;
-}
-.result-track-label {
-    font-weight: 700;
-    font-size: 13px;
-    text-transform: uppercase;
-}
-.result-meta {
-    font-size: 11px;
-    color: var(--text-dim);
-}
-.result-chords {
-    font-size: 13px;
-    font-weight: 500;
-    color: var(--text);
-    word-break: break-all;
-    line-height: 1.6;
-}
-.result-chords .muted {
-    color: var(--text-dim);
-    font-weight: 400;
+
+@media (max-width: 620px) {
+    #app {
+        min-width: 0;
+    }
+
+    #sidebar {
+        width: 132px;
+    }
+
+    #step-bar {
+        overflow-x: auto;
+        justify-content: flex-start;
+    }
+
+    .step-indicator {
+        flex: 0 0 auto;
+    }
+
+    .tab-workflow-panel {
+        padding: 24px 12px;
+    }
+
+    .sep-model-row {
+        align-items: stretch;
+    }
+
+    .sep-model-label,
+    .sel-separator,
+    #btn-start-sep {
+        width: 100%;
+    }
+
+    .sel-separator {
+        min-width: 0;
+    }
+
+    .section-heading {
+        gap: 12px;
+    }
+
+    .analysis-track-card {
+        grid-template-columns: minmax(70px, auto) minmax(0, 1fr) auto;
+    }
+
+    .analysis-track-card .btn-run-analysis {
+        grid-column: 2;
+    }
+
+    .analysis-status {
+        grid-column: 3;
+        grid-row: 1 / span 2;
+    }
+
+    #bottom-bar {
+        padding: 0 8px;
+    }
+
+    .tab4-track-row {
+        grid-template-columns: 58px var(--tab4-content-width, calc(100% - 58px));
+    }
+
+    .tab4-track-label {
+        font-size: 10px;
+    }
+
+    .playback-controls {
+        gap: 7px;
+    }
+
+    .seek-bar {
+        min-width: 90px;
+        width: 28vw;
+    }
+
+    .time-display {
+        min-width: 86px;
+        font-size: 10px;
+    }
+
+    .tab4-heading {
+        flex-direction: column;
+        min-height: 76px;
+    }
+
+    .tab4-heading-actions {
+        width: 100%;
+        justify-content: space-between;
+    }
+
+    .tab4-zoom {
+        width: 76px;
+    }
+
+    .btn-export-midi {
+        min-width: 96px;
+    }
 }

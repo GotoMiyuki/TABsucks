@@ -1,0 +1,41 @@
+{
+  "WorkshopName": "梦的光点-王心凌",
+  "LastTab": "Tab4",
+  "TabState": {
+    "Tab1": {
+      "RawAudioFilePath": "raw_audio\\梦的光点-王心凌.mp3"
+    },
+    "Tab2": {
+      "SeparationState": "done",
+      "SeparationModelName": "separation_bs_roformer",
+      "SeparationModelPath": "E:\\raungong\\tb\\TABsucks\\src\\plugins\\separation\\model_1",
+      "TrackAudioFilePath": {
+        "vocals": "track_audio\\track_vocals\\separation_bs_roformer_vocals.wav",
+        "drums": "track_audio\\track_drums\\separation_bs_roformer_drums.wav",
+        "bass": "track_audio\\track_bass\\separation_bs_roformer_bass.wav",
+        "piano": "track_audio\\track_piano\\separation_bs_roformer_piano.wav",
+        "guitar": "track_audio\\track_guitar\\separation_bs_roformer_guitar.wav",
+        "other": "track_audio\\track_other\\separation_bs_roformer_other.wav"
+      },
+      "SelectedTracks": [
+        "vocals",
+        "guitar"
+      ]
+    },
+    "Tab3": {
+      "vocals::1216868c": {
+        "AnalysisToolName": "chord_ismir2019",
+        "AnalysisState": "done",
+        "AnalysisResultPath": "analysis_result\\chord_ismir2019_result\\result_1216868c.json",
+        "AnalysisTaskId": "1216868c"
+      },
+      "guitar::7bff8b43": {
+        "AnalysisToolName": "chord_ismir2019",
+        "AnalysisState": "done",
+        "AnalysisResultPath": "analysis_result\\chord_ismir2019_result\\result_7bff8b43.json",
+        "AnalysisTaskId": "7bff8b43"
+      }
+    },
+    "Tab4": {}
+  }
+}

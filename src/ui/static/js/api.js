@@ -53,6 +53,28 @@ const api = {
         return this._fetchJSON(`${this._baseURL}/workshops/${wid}`);
     },
 
+    async updateSelectedTracks(wid, tracks) {
+        return this._fetchJSON(
+            `${this._baseURL}/workshops/${wid}/selected-tracks`,
+            {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ tracks }),
+            }
+        );
+    },
+
+    async updateCurrentTab(wid, tab) {
+        return this._fetchJSON(
+            `${this._baseURL}/workshops/${wid}/current-tab`,
+            {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ tab }),
+            }
+        );
+    },
+
     async renameWorkshop(wid, name) {
         return this._fetchJSON(`${this._baseURL}/workshops/${wid}`, {
             method: 'PUT',
@@ -150,6 +172,30 @@ const api = {
 
     getAudioURL(wid, track) {
         return `${this._baseURL}/workshops/${wid}/audio/${encodeURIComponent(track)}`;
+    },
+
+    async exportMidi(wid, tracks) {
+        const query = new URLSearchParams();
+        for (const track of tracks) query.append('tracks', track);
+        try {
+            const response = await fetch(
+                `${this._baseURL}/workshops/${wid}/midi?${query}`
+            );
+            if (!response.ok) {
+                const body = await response.json().catch(() => null);
+                const error = body?.detail?.error || body?.error || `HTTP ${response.status}`;
+                return { ok: false, error };
+            }
+            const disposition = response.headers.get('content-disposition') || '';
+            const match = disposition.match(/filename="?([^";]+)"?/i);
+            return {
+                ok: true,
+                blob: await response.blob(),
+                filename: match?.[1] || 'tabsucks-selected.mid',
+            };
+        } catch (error) {
+            return { ok: false, error: String(error?.message || error) };
+        }
     },
 
     // ── Events (SSE) ──

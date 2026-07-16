@@ -341,6 +341,82 @@ def test_sse_real_stream_smoke() -> None:
 
 
 class TestMockEndpoints:
+    def test_selected_tracks_persist(self, kernel_and_client) -> None:
+        kernel, client = kernel_and_client
+        wid = kernel.create_workshop("X")["id"]
+        ws = kernel.manager.get(wid)
+        ws.state.tab_state.tab2.separation_state = "done"
+        ws.state.tab_state.tab2.track_audio_file_path = {
+            "vocals": "track_audio/vocals.wav",
+            "guitar": "track_audio/guitar.wav",
+        }
+
+        r = client.put(
+            f"/api/workshops/{wid}/selected-tracks",
+            json={"tracks": ["guitar", "vocals"]},
+        )
+
+        assert r.status_code == 200
+        assert r.json()["tracks"] == ["vocals", "guitar"]
+        state = client.get(f"/api/workshops/{wid}").json()
+        assert state["TabState"]["Tab2"]["SelectedTracks"] == [
+            "vocals",
+            "guitar",
+        ]
+
+    def test_selected_tracks_reject_unknown_track(
+        self, kernel_and_client
+    ) -> None:
+        kernel, client = kernel_and_client
+        wid = kernel.create_workshop("X")["id"]
+
+        r = client.put(
+            f"/api/workshops/{wid}/selected-tracks",
+            json={"tracks": ["vocals", "unknown"]},
+        )
+
+        assert r.status_code == 409
+
+    def test_selected_tracks_require_completed_separation(
+        self, kernel_and_client
+    ) -> None:
+        kernel, client = kernel_and_client
+        wid = kernel.create_workshop("X")["id"]
+
+        r = client.put(
+            f"/api/workshops/{wid}/selected-tracks",
+            json={"tracks": ["vocals"]},
+        )
+
+        assert r.status_code == 409
+
+    def test_selected_tracks_reject_inactive_workshop(
+        self, kernel_and_client
+    ) -> None:
+        kernel, client = kernel_and_client
+        old_wid = kernel.create_workshop("Old")["id"]
+        kernel.create_workshop("Active")
+
+        r = client.put(
+            f"/api/workshops/{old_wid}/selected-tracks",
+            json={"tracks": []},
+        )
+
+        assert r.status_code == 409
+
+    def test_current_tab_persists(self, kernel_and_client) -> None:
+        kernel, client = kernel_and_client
+        wid = kernel.create_workshop("X")["id"]
+
+        r = client.put(
+            f"/api/workshops/{wid}/current-tab",
+            json={"tab": "Tab3"},
+        )
+
+        assert r.status_code == 200
+        state = client.get(f"/api/workshops/{wid}").json()
+        assert state["LastTab"] == "Tab3"
+
     def test_separate_returns_ok(self, kernel_and_client) -> None:
         kernel, client = kernel_and_client
         wid = kernel.create_workshop("X")["id"]
@@ -383,6 +459,46 @@ class TestMockEndpoints:
 
         assert r.status_code == 200
         assert r.json()["results"]["guitar"] == expected
+        assert (
+            r.json()["result_plugins"]["guitar"]
+            == "chord_chordnet_2e1d"
+        )
+
+    def test_analysis_results_restore_latest_rerun(
+        self, kernel_and_client
+    ) -> None:
+        kernel, client = kernel_and_client
+        wid = kernel.create_workshop("X")["id"]
+        ws = kernel.manager.get(wid)
+
+        for plugin, chord in (
+            ("chord_chordnet_2e1d", "C"),
+            ("chord_btc_sl", "G"),
+            ("chord_chordnet_2e1d", "Am"),
+        ):
+            tid = ws.upsert_analysis_task("guitar", plugin)
+            result = {"chords": [{"chord": chord}]}
+            result_abs = ws.cache.save_analysis_result(
+                plugin,
+                tid,
+                result,
+                ext="json",
+            )
+            ws.complete_analysis(
+                "guitar",
+                tid,
+                ws.cache.to_relative(result_abs),
+            )
+
+        body = client.get(
+            f"/api/workshops/{wid}/analysis-results"
+        ).json()
+
+        assert body["results"]["guitar"]["chords"][0]["chord"] == "Am"
+        assert (
+            body["result_plugins"]["guitar"]
+            == "chord_chordnet_2e1d"
+        )
 
     def test_visualization_mock(self, kernel_and_client) -> None:
         kernel, client = kernel_and_client
@@ -392,6 +508,68 @@ class TestMockEndpoints:
         body = r.json()
         assert "waveform" in body or "beats" in body
 
+    def test_visualization_uses_requested_stem_waveform(
+        self, kernel_and_client, monkeypatch
+    ) -> None:
+        kernel, client = kernel_and_client
+        wid = kernel.create_workshop("X")["id"]
+        ws = kernel.manager.get(wid)
+        stem_path = ws.cache.track_audio_path("bass", "bass.wav")
+        stem_path.parent.mkdir(parents=True, exist_ok=True)
+        stem_path.write_bytes(b"stem")
+        ws.state.tab_state.tab2.separation_state = "done"
+        ws.state.tab_state.tab2.track_audio_file_path = {
+            "bass": ws.cache.to_relative(stem_path),
+        }
+        loaded = {}
+
+        def fake_load(path):
+            loaded["path"] = Path(path)
+            return SimpleNamespace(
+                samples=[0.0, 1.0],
+                sample_rate=2,
+                duration=1.0,
+            )
+
+        monkeypatch.setattr(
+            "src.audio.loader.load_audio_multi_channel",
+            fake_load,
+        )
+        monkeypatch.setattr(
+            "src.visualizer.waveform.compute_waveform",
+            lambda audio, num_frames=2000: SimpleNamespace(
+                to_dict=lambda: {
+                    "peaks": [0.25, 1.0],
+                    "duration": 1.0,
+                    "sampleRate": 2,
+                    "frameInterval": 0.5,
+                    "totalFrames": 2,
+                }
+            ),
+        )
+
+        r = client.get(
+            f"/api/workshops/{wid}/visualization?track=bass"
+        )
+
+        assert r.status_code == 200
+        assert loaded["path"] == stem_path
+        assert r.json()["waveform"]["peaks"] == [0.25, 1.0]
+
+    def test_visualization_does_not_generate_fake_chords(
+        self, kernel_and_client
+    ) -> None:
+        kernel, client = kernel_and_client
+        wid = kernel.create_workshop("X")["id"]
+
+        r = client.get(
+            f"/api/workshops/{wid}/visualization?track=bass"
+        )
+
+        assert r.status_code == 200
+        assert r.json()["chords"] == []
+        assert r.json()["metadata"]["hasChordData"] is False
+
     def test_audio_stream(self, kernel_and_client) -> None:
         kernel, client = kernel_and_client
         wid = kernel.create_workshop("X")["id"]
@@ -399,6 +577,90 @@ class TestMockEndpoints:
         assert r.status_code == 200
         assert "audio/wav" in r.headers["content-type"]
         assert len(r.content) > 0
+
+    def test_range_request_for_track_audio(
+        self, kernel_and_client
+    ) -> None:
+        kernel, client = kernel_and_client
+        wid = kernel.create_workshop("X")["id"]
+        ws = kernel.manager.get(wid)
+        stem_path = ws.cache.track_audio_path("vocals", "vocals.wav")
+        stem_path.parent.mkdir(parents=True, exist_ok=True)
+        stem_path.write_bytes(bytes(range(64)))
+        ws.state.tab_state.tab2.track_audio_file_path = {
+            "vocals": ws.cache.to_relative(stem_path),
+        }
+
+        r = client.get(
+            f"/api/workshops/{wid}/audio/vocals",
+            headers={"Range": "bytes=0-15"},
+        )
+
+        assert r.status_code == 206
+        assert r.headers["accept-ranges"] == "bytes"
+        assert r.headers["content-range"].startswith("bytes 0-15/")
+        assert len(r.content) == 16
+
+    def test_midi_export_uses_current_selected_tracks(
+        self, kernel_and_client
+    ) -> None:
+        kernel, client = kernel_and_client
+        wid = kernel.create_workshop("X")["id"]
+        ws = kernel.manager.get(wid)
+        ws.state.tab_state.tab2.separation_state = "done"
+        ws.state.tab_state.tab2.track_audio_file_path = {
+            "bass": "track_audio/track_bass/bass.wav",
+            "guitar": "track_audio/track_guitar/guitar.wav",
+        }
+        ws.set_selected_tracks(["bass", "guitar"])
+
+        for track, chord in (("bass", "C:maj"), ("guitar", "A:min")):
+            tid = ws.upsert_analysis_task(track, "chord_test")
+            result_path = ws.cache.save_analysis_result(
+                "chord_test",
+                tid,
+                {
+                    "chords": [
+                        {"start": 0.0, "end": 2.0, "chord": chord},
+                    ]
+                },
+                ext="json",
+            )
+            ws.complete_analysis(
+                track,
+                tid,
+                ws.cache.to_relative(result_path),
+            )
+
+        r = client.get(
+            f"/api/workshops/{wid}/midi",
+            params=[("tracks", "bass"), ("tracks", "guitar")],
+        )
+
+        assert r.status_code == 200
+        assert r.headers["content-type"].startswith("audio/midi")
+        assert r.content.startswith(b"MThd")
+        midi = __import__("pretty_midi").PrettyMIDI(io.BytesIO(r.content))
+        assert [item.name for item in midi.instruments] == ["BASS", "GUITAR"]
+
+    def test_midi_export_rejects_unselected_track(
+        self, kernel_and_client
+    ) -> None:
+        kernel, client = kernel_and_client
+        wid = kernel.create_workshop("X")["id"]
+        ws = kernel.manager.get(wid)
+        ws.state.tab_state.tab2.separation_state = "done"
+        ws.state.tab_state.tab2.track_audio_file_path = {
+            "bass": "track_audio/track_bass/bass.wav",
+        }
+        ws.set_selected_tracks(["bass"])
+
+        r = client.get(
+            f"/api/workshops/{wid}/midi",
+            params=[("tracks", "guitar")],
+        )
+
+        assert r.status_code == 409
 
 
 class TestErrorFormat:
@@ -431,7 +693,58 @@ class TestStaticFiles:
 
         assert r.status_code == 200
         assert r.headers["cache-control"] == "no-store, max-age=0"
-        assert "app.js?v=20260716b" in r.text
+        assert "app.js?v=20260716g" in r.text
+
+    def test_tab2_and_tab3_have_separate_responsibilities(
+        self, kernel_and_client
+    ) -> None:
+        _, client = kernel_and_client
+
+        html = client.get("/").text
+
+        step2 = html.index('id="step-2"')
+        track_selection = html.index('id="stem-selection-list"')
+        step3 = html.index('id="step-3"')
+        analyzer_config = html.index('id="analysis-config-list"')
+        assert step2 < track_selection < step3 < analyzer_config
+        assert 'id="phase-analyze"' not in html
+
+    def test_tab4_has_selected_track_timeline_and_playback_controls(
+        self, kernel_and_client
+    ) -> None:
+        _, client = kernel_and_client
+
+        html = client.get("/").text
+
+        step4 = html.index('id="step-4"')
+        track_list = html.index('id="tab4-track-list"')
+        step4_end = html.index("</section>", step4)
+        playback = html.index('id="playback-controls"')
+        assert step4 < track_list < step4_end < playback
+
+        app_js = client.get("/static/js/app.js").text
+        assert "state.selectedTracks.has(track)" in app_js
+        assert "createTab4AudioElements(wid, tracks)" in app_js
+        assert "className = 'tab4-playhead'" in app_js
+        assert "renderChordBlocks(" in app_js
+        assert 'id="tab4-zoom"' in html
+        assert 'id="btn-export-midi"' in html
+        assert "calculateTimelineLayout" in app_js
+        assert "api.exportMidi" in app_js
+
+    def test_frontend_filters_events_and_binds_results_to_plugins(
+        self, kernel_and_client
+    ) -> None:
+        _, client = kernel_and_client
+
+        stream_js = client.get("/static/js/event_stream.js").text
+        app_js = client.get("/static/js/app.js").text
+
+        assert "event.workshop_id !== this._wid" in stream_js
+        assert "stream.setWorkshopId(wid)" in app_js
+        assert "isTrackAnalysisComplete(track)" in app_js
+        assert "plugin.name.startsWith('chord_')" in app_js
+        assert "plugin.input_stems.includes(track)" in app_js
 
 
 class TestPluginEndpoints:

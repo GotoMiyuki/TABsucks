@@ -1,14 +1,7 @@
-"""分离 / 分析 / 上传路由。
+"""上传、分离、分析和 Tab4 可视化路由。
 
-当前状态（MVP mock 模式）:
-
-* 上传（``/upload``）—— 真实现：调 ``MusicWorkshop.set_raw_audio_from_bytes``
-* 分离（``/separate``） —— **MOCK**：asyncio sleep 模拟进度，替换点 ``[MOCK] A``
-* 分析（``/analyze``）  —— **MOCK**：asyncio sleep 模拟进度，替换点 ``[MOCK] B``
-* 可视化（``/visualization``） —— **MOCK**：从本地 ``mock_data/demo.json`` 读，替换点 ``[MOCK] C``
-* 音频（``/audio/<track>``） —— **MOCK**：造 5 秒合成 wav，替换点 ``[MOCK] D``
-
-这些 ``[MOCK] X`` 标记后续插件层接入时按字母序查找。
+分离与分析任务通过 Kernel/Orchestrator 启动。可视化读取真实原音频或分离 stem，
+并合并对应音轨最新完成的分析结果；音频端点直接返回车间中的真实文件。
 """
 
 from __future__ import annotations
@@ -18,8 +11,8 @@ import math
 import random
 from pathlib import Path
 
-from fastapi import APIRouter, File, HTTPException, Request, UploadFile
-from fastapi.responses import StreamingResponse
+from fastapi import APIRouter, File, HTTPException, Query, Request, UploadFile
+from fastapi.responses import FileResponse, Response, StreamingResponse
 from pydantic import BaseModel
 
 MOCK_DATA_DIR = (
@@ -258,6 +251,7 @@ def get_analysis_results(wid: str, request: Request) -> dict:
         _err(404, f"Workshop {wid} not found")
 
     results: dict[str, dict] = {}
+    result_plugins: dict[str, str] = {}
     for key, task_state in ws.state.tab_state.tab3.items():
         if (
             task_state.analysis_state != "done"
@@ -278,8 +272,14 @@ def get_analysis_results(wid: str, request: Request) -> dict:
             result_data = {"chords": result_data}
         if isinstance(result_data, dict):
             results[track_name] = result_data
+            if task_state.analysis_tool_name:
+                result_plugins[track_name] = task_state.analysis_tool_name
 
-    return {"ok": True, "results": results}
+    return {
+        "ok": True,
+        "results": results,
+        "result_plugins": result_plugins,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -297,8 +297,8 @@ def get_visualization(
     if ws is None:
         _err(404, f"车间 {wid} 不存在")
 
-    # 1. 波形：从 raw audio 计算
-    waveform_data = _build_waveform(ws)
+    # 1. 波形：full 读 raw audio，具体 track 读对应 stem
+    waveform_data = _build_waveform(ws, track)
 
     # 2. 节拍 / 和弦：从 Tab3 分析结果读取
     beat_data = None
@@ -312,7 +312,8 @@ def get_visualization(
     return {
         "waveform": waveform_data,
         "beats": beat_data or _mock_beats(duration),
-        "chords": chord_data or _mock_chords(duration),
+        # Tab4 不能把生成的占位和弦当作模型分析结果。
+        "chords": chord_data or [],
         "metadata": {
             "duration": duration,
             "sampleRate": waveform_data.get("sampleRate", 44100),
@@ -322,21 +323,24 @@ def get_visualization(
     }
 
 
-def _build_waveform(ws) -> dict:
-    """从 raw audio 计算波形峰值数据。"""
+def _build_waveform(ws, track: str = "full") -> dict:
+    """从 raw audio 或指定 stem 计算波形峰值数据。"""
     try:
-        raw_path = ws.get_raw_audio_path()
-        if raw_path is None or not raw_path.is_file():
+        if track == "full":
+            audio_path = ws.get_raw_audio_path()
+        else:
+            audio_path = ws.get_track_audio_paths().get(track)
+        if audio_path is None or not audio_path.is_file():
             raise FileNotFoundError
         from src.audio.loader import load_audio_multi_channel
 
-        audio = load_audio_multi_channel(raw_path)
+        audio = load_audio_multi_channel(audio_path)
         from src.visualizer.waveform import compute_waveform
 
         wf = compute_waveform(audio, num_frames=2000)
         return wf.to_dict()
     except Exception:  # noqa: BLE001
-        return _mock_waveform("full")
+        return _mock_waveform(track)
 
 
 def _extract_visualization_from_tab3(ws, track: str, duration: float) -> tuple:
@@ -348,7 +352,9 @@ def _extract_visualization_from_tab3(ws, track: str, duration: float) -> tuple:
     beat_data = None
     chord_data = None
 
-    for key, task_state in ws.state.tab_state.tab3.items():
+    for key, task_state in reversed(
+        list(ws.state.tab_state.tab3.items())
+    ):
         if task_state.analysis_state != "done":
             continue
         if task_state.analysis_result_path is None:
@@ -440,7 +446,7 @@ def _build_chords_from_result(raw: dict, duration: float) -> list[dict] | None:
 
 @router.get("/workshops/{wid}/audio/{track}")
 def get_audio(wid: str, track: str, request: Request = None  # type: ignore[assignment]
-) -> StreamingResponse:
+) -> FileResponse:
     """返回 ``cache/workshop_<wid>/track_audio/track_<name>/<file>`` 的真实 wav。"""
     kernel = _kernel(request)
     ws = kernel.manager.get(wid) if kernel.manager else None
@@ -457,14 +463,63 @@ def get_audio(wid: str, track: str, request: Request = None  # type: ignore[assi
         else:
             _err(404, f"音轨 {track} 不存在")
 
-    def file_stream():
-        with open(abs_path, "rb") as f:
-            yield from f
-
-    return StreamingResponse(
-        file_stream(),
+    return FileResponse(
+        abs_path,
         media_type="audio/wav",
-        headers={"Content-Disposition": f'inline; filename="{track}.wav"'},
+        filename=f"{track}.wav",
+        content_disposition_type="inline",
+    )
+
+
+@router.get("/workshops/{wid}/midi")
+def export_selected_tracks_midi(
+    wid: str,
+    tracks: list[str] | None = Query(default=None),
+    request: Request = None,  # type: ignore[assignment]
+) -> Response:
+    """将当前 Tab2 已选音轨的最新和弦结果导出为多轨 MIDI。"""
+    kernel = _kernel(request)
+    ws = kernel.manager.get(wid) if kernel.manager else None
+    if ws is None:
+        _err(404, f"车间 {wid} 不存在")
+
+    selected = ws.get_selected_tracks()
+    requested_set = set(tracks or selected)
+    invalid = sorted(requested_set.difference(selected))
+    if invalid:
+        _err(409, f"包含当前未选择的音轨: {invalid}")
+    requested = [track for track in selected if track in requested_set]
+    if not requested:
+        _err(409, "Tab2 尚未选择可导出的音轨")
+
+    track_chords = {}
+    missing = []
+    for track in requested:
+        _, chords = _extract_visualization_from_tab3(ws, track, duration=1.0)
+        if chords:
+            track_chords[track] = chords
+        else:
+            missing.append(track)
+    if missing:
+        _err(409, f"以下音轨没有可导出的和弦结果: {missing}")
+
+    from src.kernel.core.midi_exporter import (
+        MidiExporterError,
+        export_chord_tracks_to_midi,
+    )
+
+    try:
+        midi_data = export_chord_tracks_to_midi(track_chords)
+    except MidiExporterError as e:
+        _err(409, str(e))
+
+    filename = f"tabsucks_{wid}_selected.mid"
+    return Response(
+        content=midi_data,
+        media_type="audio/midi",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+        },
     )
 
 

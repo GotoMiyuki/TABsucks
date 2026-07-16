@@ -5,11 +5,15 @@
 
 export function drawWaveform(canvas, peaks, options = {}) {
     const ctx = canvas.getContext('2d');
-    const dpr = window.devicePixelRatio || 1;
     const rect = canvas.getBoundingClientRect();
+    const maxBackingWidth = 16384;
+    const dpr = Math.min(
+        window.devicePixelRatio || 1,
+        maxBackingWidth / Math.max(1, rect.width)
+    );
 
-    canvas.width = rect.width * dpr;
-    canvas.height = rect.height * dpr;
+    canvas.width = Math.max(1, Math.floor(rect.width * dpr));
+    canvas.height = Math.max(1, Math.floor(rect.height * dpr));
     ctx.scale(dpr, dpr);
 
     const w = rect.width;

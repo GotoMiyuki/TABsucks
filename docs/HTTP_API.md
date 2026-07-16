@@ -64,7 +64,11 @@
   "LastTab": "Tab1",
   "TabState": {
     "Tab1": {"RawAudioFilePath": "raw_audio/song.mp3"},
-    "Tab2": {"SeparationState": "done", "TrackAudioFilePath": {"vocals": "..."}},
+    "Tab2": {
+      "SeparationState": "done",
+      "TrackAudioFilePath": {"vocals": "...", "guitar": "..."},
+      "SelectedTracks": ["vocals", "guitar"]
+    },
     "Tab3": {},
     "Tab4": {}
   }
@@ -80,6 +84,35 @@
 **Body**: `{"name": "NewName"}`
 
 **响应 200**: `{"ok": true, "name": "NewName"}`
+
+### PUT `/api/workshops/{wid}/selected-tracks`
+
+保存 Tab2 多选音轨。仅当前 active 车间可写，且必须已经完成分离；每个音轨必须存在于
+`TrackAudioFilePath`。
+
+**Body**
+
+```json
+{"tracks": ["bass", "piano", "guitar"]}
+```
+
+**响应 200**
+
+```json
+{"ok": true, "tracks": ["bass", "piano", "guitar"]}
+```
+
+**响应 409**：车间未激活、分离未完成，或请求包含当前不可用的音轨。
+
+### PUT `/api/workshops/{wid}/current-tab`
+
+立即保存当前 UI Tab，供关闭或重启后恢复。仅当前 active 车间可写。
+
+**Body**: `{"tab": "Tab3"}`
+
+**响应 200**: `{"ok": true, "tab": "Tab3"}`
+
+**响应 409**：车间未激活。
 
 ### DELETE `/api/workshops/{wid}?keep_state={true|false}`
 
@@ -136,36 +169,59 @@
 
 ---
 
-### POST `/api/workshops/{wid}/separate` `[MOCK 替换点 A]`
+### POST `/api/workshops/{wid}/separate`
 
-启动分离。**MVP 是 mock**，真 SeparatorPlugin 接入后改 `_run_mock_separation`。
+通过 Kernel/Orchestrator 启动真实分离插件任务，请求本身不等待推理结束。
 
-**Body**: `{"model": "BS-RoFormer-SW"}`
+**Body**: `{"model": "separation_bs_roformer"}`
 
-**响应 200**: `{"ok": true, "message": "分离已启动"}`
+**响应 200**: `{"ok": true, "task": "separation_bs_roformer"}`
 
 **触发事件（通过 `/api/events` 接收）**：
 - `separation_started`
 - `separation_progress` × N（progress 0~1）
-- `separation_done`（payload: `{stems: ["vocals", ...]}`）
+- `separation_done`（最终 Workshop payload: `{tracks: ["vocals", ...]}`）
 
 ---
 
-### POST `/api/workshops/{wid}/analyze` `[MOCK 替换点 B]`
+### POST `/api/workshops/{wid}/analyze`
 
-启动单个 track 的分析。
+启动单个 track 的真实分析插件任务。插件必须与音轨兼容；Tab3 按插件 manifest 的
+`input_stems` 过滤候选模型。
 
-**Body**: `{"track": "vocals", "plugin": "chord_ismir2019"}`
+**Body**: `{"track": "guitar", "plugin": "chord_ismir2019"}`
 
-**响应 200**: `{"ok": true, "message": "分析 vocals 已启动"}`
+**响应 200**: `{"ok": true, "task": "chord_ismir2019"}`
 
-**触发事件**：`analysis_started` → `analysis_done`（带 result 字典）。
+**触发事件**：`analysis_started` → `analysis_progress` → `analysis_done`。
+完成事件包含 `track`、`plugin`、`task_id`、`result_path` 和规范化后的 `result`。
+
+### GET `/api/workshops/{wid}/analysis-results`
+
+读取每条音轨最新的已完成分析结果，并返回产生该结果的插件名。Tab3 使用
+`result_plugins` 判断持久化结果是否与当前下拉框选择一致。
+
+**响应 200**
+
+```json
+{
+  "ok": true,
+  "results": {
+    "guitar": {"chords": [{"start": 0.0, "end": 1.0, "chord": "C"}]}
+  },
+  "result_plugins": {
+    "guitar": "chord_chordnet_2e1d"
+  }
+}
+```
 
 ---
 
-### GET `/api/workshops/{wid}/visualization?track={name}` `[MOCK 替换点 C]`
+### GET `/api/workshops/{wid}/visualization?track={name}`
 
-获取可视化 JSON（前端直接喂给 Canvas）。MVP mock，接入真 `export_visualization_json()` 后改 `_mock_*`。
+获取 Tab4 可视化 JSON。`track=full` 时波形来自原始音频；指定音轨时波形来自对应的
+分离 stem。节拍与和弦优先读取该音轨最新完成的 Tab3 分析结果；没有真实和弦结果时
+`chords` 返回空数组，不生成模拟分析结果。
 
 **响应 200**
 
@@ -180,11 +236,29 @@
 
 ---
 
-### GET `/api/workshops/{wid}/audio/{track}` `[MOCK 替换点 D]`
+### GET `/api/workshops/{wid}/audio/{track}`
 
-获取某条音轨的 wav 字节流（MVP mock 合成 5 秒）。前端 HTML5 `<audio src="/api/workshops/.../audio/vocals">` 即可播放。
+获取真实分离音轨文件。支持 HTTP Range 请求，供 Tab4 的浏览器播放器拖拽定位和
+多轨同步播放。
 
-**响应 200**: `audio/wav` stream。
+**响应 200 / 206**: `audio/wav`。
+
+---
+
+### GET `/api/workshops/{wid}/midi?tracks={name}&tracks={name}`
+
+把 Tab2 当前已选音轨的最新和弦分析区间导出为标准多轨 MIDI。每个请求音轨对应一个
+MIDI instrument track，和弦区间会转换为同时起止的组成音。该接口导出的是和弦分析
+结果，不是旋律音高转录。
+
+- `tracks` 可重复传递；不传时默认导出当前全部 `SelectedTracks`。
+- 请求音轨必须属于当前 `SelectedTracks`。
+- 每条请求音轨必须存在最新的已完成和弦分析结果。
+
+**响应 200**: `audio/midi`，附件文件名
+`tabsucks_<workshop_id>_selected.mid`。
+
+**响应 409**: 没有已选音轨、包含未选音轨，或任一音轨缺少有效和弦结果。
 
 ---
 
@@ -215,7 +289,7 @@ data: {"type": "<event>", "payload": {...}, "workshop_id": "<wid>", "emitted_at"
 | `raw_audio_set` | `{path}` | 上传原音频 |
 | `separation_started` | `{model}` | 分离开始 |
 | `separation_progress` | `{progress: 0~1}` | 进度 |
-| `separation_done` | `{stems: [...]}` | 分离完成 |
+| `separation_done` | `{tracks: [...]}` | Workshop 持久化分轨后完成 |
 | `separation_failed` | `{model, error}` | 分离失败 |
 | `analysis_started` | `{track, plugin, task_id?}` | 分析开始 |
 | `analysis_done` | `{track, plugin, task_id?, result_path}` | 分析完成 |
@@ -290,6 +364,7 @@ python -m src.ui --reload
 | `TabState.Tab2.SeparationModelName` | `tab_state.tab2.separation_model_name` | str\|null |
 | `TabState.Tab2.SeparationModelPath` | `tab_state.tab2.separation_model_path` | str\|null |
 | `TabState.Tab2.TrackAudioFilePath` | `tab_state.tab2.track_audio_file_path` | `{name: rel_path}` |
+| `TabState.Tab2.SelectedTracks` | `tab_state.tab2.selected_tracks` | `list[track_name]` |
 | `TabState.Tab3[f"{track}::{task_id}"].AnalysisToolName` | `tab_state.tab3[k].analysis_tool_name` | str\|null |
 | `TabState.Tab3[...].AnalysisState` | `tab_state.tab3[k].analysis_state` | RunState |
 | `TabState.Tab3[...].AnalysisResultPath` | `tab_state.tab3[k].analysis_result_path` | str\|null |

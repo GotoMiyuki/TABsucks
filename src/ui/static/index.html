@@ -78,10 +78,9 @@
                     </div>
                 </section>
 
-                <!-- ─── STEP 2: SELECT (音轨选择 + 分析器配置) ─── -->
+                <!-- ─── Tab2: 音轨分离 + 多选 ─── -->
                 <section id="step-2" class="step-panel">
-                    <!-- 阶段 2a: 分离模型 + 选音轨 -->
-                    <div id="phase-separate">
+                    <div class="tab-workflow-panel">
                         <div class="sep-model-row">
                             <label class="sep-model-label">分离模型</label>
                             <select id="sel-separator" class="sel-separator" title="选择分离模型">
@@ -96,32 +95,49 @@
                                 <span class="sep-ring-label" id="sep-ring-label-2">0%</span>
                             </div>
                         </div>
-                        <p class="step-hint">select your separator and tracks</p>
-                        <div id="stem-grid" class="stem-grid-2x3">
-                            <!-- 6 个音轨大方块，JS 动态生成 -->
+                        <div class="section-heading">
+                            <span>选择进入 Tab3 的音轨</span>
+                            <span id="selected-track-count" class="selection-count">0 / 6</span>
                         </div>
-                    </div>
-                    <!-- 阶段 2b: 分析器配置 -->
-                    <div id="phase-analyze" class="hidden">
-                        <p class="step-hint">select your analyzers</p>
-                        <div id="analysis-config-list" class="analysis-config-list"></div>
-                        <button id="btn-run-all" class="btn-pill btn-run-all">run all</button>
+                        <div id="stem-selection-list" class="stem-selection-list">
+                            <p class="empty-msg compact">完成分离后可选择音轨</p>
+                        </div>
                     </div>
                 </section>
 
-                <!-- ─── Tab3: 音轨分析结果 ─── -->
+                <!-- ─── Tab3: 已选音轨分析 ─── -->
                 <section id="step-3" class="step-panel">
-                    <div class="analysis-results-container">
-                        <div id="analysis-results-list" class="analysis-results-list">
-                            <p class="empty-msg">complete analysis first</p>
+                    <div class="tab-workflow-panel">
+                        <div class="section-heading">
+                            <span>为已选音轨配置和弦分析模型</span>
+                            <span id="analysis-complete-count" class="selection-count">0 / 0</span>
                         </div>
+                        <div id="analysis-config-list" class="analysis-config-list"></div>
+                        <button id="btn-run-all" class="btn-pill btn-run-all">run all selected</button>
                     </div>
                 </section>
 
                 <!-- ─── Tab4: 播放 / 导出 ─── -->
                 <section id="step-4" class="step-panel">
-                    <div class="step-center">
-                        <p class="empty-msg">完成分析后可查看可视化与播放</p>
+                    <div class="tab4-timeline">
+                        <div class="tab4-heading">
+                            <div class="tab4-heading-copy">
+                                <span>已选音轨与和弦结果</span>
+                                <span id="tab4-track-count" class="selection-count">0 tracks</span>
+                            </div>
+                            <div class="tab4-heading-actions">
+                                <div class="tab4-zoom-controls">
+                                    <button id="btn-zoom-out" class="btn-icon-square" type="button" title="缩小时间轴" aria-label="缩小时间轴">−</button>
+                                    <input id="tab4-zoom" class="tab4-zoom" type="range" min="1" max="16" step="0.5" value="1" aria-label="时间轴缩放">
+                                    <button id="btn-zoom-in" class="btn-icon-square" type="button" title="放大时间轴" aria-label="放大时间轴">+</button>
+                                    <button id="tab4-zoom-label" class="tab4-zoom-label" type="button" title="重置为 1 倍">1x</button>
+                                </div>
+                                <button id="btn-export-midi" class="btn-pill btn-export-midi" type="button">export MIDI</button>
+                            </div>
+                        </div>
+                        <div id="tab4-track-list" class="tab4-track-list">
+                            <p class="empty-msg">正在加载音轨时间轴...</p>
+                        </div>
                     </div>
                 </section>
             </div>
@@ -130,8 +146,8 @@
             <footer id="bottom-bar">
                 <button id="btn-prev" class="btn-pill hidden">previous</button>
                 <div id="playback-controls" class="playback-controls hidden">
-                    <input type="range" id="seek-bar" min="0" max="100" value="0" class="seek-bar">
-                    <span id="time-display" class="time-display">0:00/0:00</span>
+                    <input type="range" id="seek-bar" min="0" max="0" step="0.01" value="0" class="seek-bar" aria-label="播放进度">
+                    <span id="time-display" class="time-display">0:00 / 0:00</span>
                     <button id="btn-play" class="btn-play" aria-label="播放">
                         <svg width="18" height="18" viewBox="0 0 16 16" fill="currentColor"><path d="M4 2.5v11l9-5.5z"/></svg>
                     </button>
@@ -142,6 +158,6 @@
         </main>
     </div>
 
-    <script type="module" src="/static/js/app.js?v=20260716b"></script>
+    <script type="module" src="/static/js/app.js?v=20260716g"></script>
 </body>
 </html>

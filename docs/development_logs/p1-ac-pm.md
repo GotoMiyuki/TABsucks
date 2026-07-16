@@ -1655,6 +1655,87 @@ D:\anaconda\envs\pyq\python.exe -m pytest `
 
 `git diff --check` 通过。
 
+## 2026-07-16：Tab2 轨道选择与 Tab3 和弦分析职责重构
+
+### 产品流程确认
+
+本次按最初设计恢复四个独立阶段：
+
+1. Tab1：导入原始音频。
+2. Tab2：选择分离模型、运行六轨分离、从六条音轨中多选下游目标。
+3. Tab3：只为 Tab2 已选音轨配置并运行和弦分析模型。
+4. Tab4：后续再实现已选音轨及分析结果的播放和展示，本次不扩展。
+
+原页面把分析器配置放在 Tab2 的隐藏子阶段，并把 Tab3 当作结果页，与上述流程不一致。
+
+### Workshop 状态与接口
+
+- `src/kernel/core/workshop.py`
+  - `Tab2State` 新增 `SelectedTracks`，只接受
+    `vocals / drums / bass / piano / guitar / other`。
+  - 历史 `state.json` 缺少该字段时按空列表兼容。
+  - 新增 `set_selected_tracks()` / `get_selected_tracks()`，按固定六轨顺序去重并立即写盘。
+  - 重新开始分离时清空旧选择、旧 Tab3 分析任务和旧 Tab4 关联，防止新 stem
+    继续使用上一轮分离的结果。
+- `src/ui/api/workshops.py`
+  - 新增 `PUT /api/workshops/{wid}/selected-tracks`。
+  - 新增 `PUT /api/workshops/{wid}/current-tab`，立即保存 `LastTab`。
+- `src/ui/static/js/api.js`
+  - 新增 `updateSelectedTracks()` 和 `updateCurrentTab()`。
+
+### Tab2
+
+- 移除原来位于 Tab2 下半部分的分析器配置。
+- 分离完成前轨道选择不可用。
+- 分离完成后展示六个整行选择按钮。
+- 支持多选和取消选择；选中行使用对应音轨颜色的两侧高亮和勾选状态。
+- 每次选择变化立即写入当前车间，不再只保存在浏览器内存。
+- 至少选择一条音轨后才允许 Next 进入 Tab3。
+- 兼容当前重复 `separation_done` 事件：只有车间状态真正变为 `done`，或最终事件携带
+  `tracks` 时才解锁选择，避免过早开放。
+
+### Tab3
+
+- 分析器配置和运行按钮从 Tab2 移入 Tab3。
+- 只渲染 `SelectedTracks` 中的音轨，不再固定展示全部六轨。
+- 保留每轨独立选择模型、独立运行、重新运行和真实进度显示。
+- `run all selected` 只启动当前已选且尚未完成的音轨。
+- 显示已完成数量；所有已选音轨都分析完成后才允许 Next 进入 Tab4。
+- 本次不在 Tab3 展示最终分析结果卡片，结果展示职责留给后续 Tab4。
+
+### 导航与恢复
+
+- 顶部 Tab 点击和底部 Next 使用同一组门槛：
+  - 未上传音频不能进入 Tab2。
+  - 未完成分离或未选择音轨不能进入 Tab3。
+  - 已选音轨未全部分析完成不能进入 Tab4。
+- Previous 始终允许返回前一步。
+- 当前 Tab 写入 `LastTab`。
+- 重启或切换车间后恢复分离状态、可用 stem、已选音轨、分析结果和合法的最后 Tab。
+- 新建或切换车间仍会清空上一个车间的前端运行态，避免跨车间污染。
+
+### UI 与资源
+
+- `src/ui/static/index.html`
+  - Tab2 改为分离与六行选择。
+  - Tab3 改为已选音轨分析。
+- `src/ui/static/css/style.css`
+  - 新增六行多选、高亮和完成计数样式。
+  - 为窄屏补充导航、分离模型行和分析卡片响应式布局。
+- 静态模块版本更新为 `20260716d`，避免浏览器混用旧版模块。
+
+### 测试
+
+- `Tab2State` 的 `SelectedTracks` 往返和非法值校验。
+- 轨道选择按固定顺序去重并立即写盘。
+- 重新分离使旧选择、旧分析任务和旧 Tab4 状态失效。
+- HTTP 保存选择、拒绝非法音轨、保存当前 Tab。
+- 静态 HTML 确认 Tab2 选择区和 Tab3 分析区职责分离。
+- JavaScript `node --check`、Python `py_compile` 和 `git diff --check`。
+
+浏览器自动化环境无法连接主机的 `127.0.0.1`，因此未完成自动点击截图；主机侧独立测试
+服务已确认 HTTP 200，验证后服务、临时脚本和独立 cache 均已删除。
+
 ## 2026-07-16：新建车间状态串用与前端模块缓存修复
 
 ### 现象
@@ -1887,3 +1968,298 @@ Tab2 的 ChordNet 2E1D 六轨分析全部显示完成，但进入 Tab3 后每条
 - 两条相关回归测试结果：`2 passed`。
 - 历史车间恢复异常时 busy 状态能够可靠释放。
 - `node --check src/ui/static/js/app.js` 通过。
+
+## 2026-07-16：Tab2/Tab3 职责重构收尾与状态一致性修复
+
+### 事件与车间隔离
+
+- `src/ui/static/js/event_stream.js`
+  - 保留单一全局 `/api/events` 连接。
+  - 新增 `setWorkshopId()`，按事件的 `workshop_id` 过滤业务事件。
+  - 创建、切换、关闭和删除车间时同步更新事件目标，避免其他车间的分离或分析事件
+    污染当前 Tab2/Tab3。
+- `src/ui/static/js/app.js`
+  - 车间恢复、选轨保存、分离启动和分析启动均捕获请求发起时的 `wid`。
+  - 异步响应返回后再次核对当前车间，旧车间响应不再覆盖新车间 UI。
+  - `LastTab` 写入改为 Promise 串行队列，避免快速 Previous/Next 时请求乱序落盘。
+
+### Tab2 完整性与失败恢复
+
+- 后端 `set_selected_tracks()` 只接受已完成分离且存在于
+  `TrackAudioFilePath` 的音轨；业务校验错误统一映射为 HTTP 409。
+- 分离 HTTP 启动失败时恢复启动前的 stem、选择和分析状态，不再先清空后永久丢失。
+- `separation_done` 必须包含
+  `vocals / drums / bass / piano / guitar / other` 六轨才会解锁选轨；缺轨会显示明确错误。
+- 新一轮分离会清空旧 `SelectedTracks`、Tab3 任务和 Tab4 关联状态，防止旧分析结果
+  继续绑定到新 stem。
+
+### Tab3 模型兼容与结果身份
+
+- Tab3 只加载 `chord_*` 插件，并按 manifest 的 `input_stems` 为每条已选音轨生成下拉项。
+- ChordNet 2E1D、BTC-SL 和 ISMIR 2019 的 manifest 明确支持六个分离 stem；
+  `chord_bass_root` 仍只对 bass 提供。
+- 每条音轨持久保存当前下拉选择；模型切换后，旧模型结果不再被视为当前完成结果。
+- 分析开始时立即使该轨道旧结果失效；重跑失败后保持未完成，不能凭旧结果进入 Tab4。
+- `analysis_done` / `analysis_failed` payload 补充 `plugin`。
+- `GET /api/workshops/{wid}/analysis-results` 新增 `result_plugins`，恢复车间时把结果和产生
+  该结果的插件绑定。
+- 同一轨道同一插件只有仍在运行的任务会复用 task id；已完成任务重跑会创建新记录，
+  保证重新打开车间时恢复最新一次结果。
+
+### 文档、样式与接口
+
+- `docs/HTTP_API.md`
+  - 补充 `SelectedTracks`、选轨保存、当前 Tab 保存和分析结果恢复接口。
+  - 更新真实分离/分析响应和事件 payload，不再沿用旧 mock 描述。
+- 删除已经移出 Tab3 的结果卡片残留 CSS。
+- 静态资源版本统一更新为 `20260716d`。
+
+### 验证
+
+- 定向测试（完整执行，保留旧测试）：
+
+```text
+105 passed, 3 failed
+```
+
+3 条失败是当前仓库已有测试仍按旧 mock 前提执行：
+
+- 空车间直接启动分离，真实链路因没有 raw audio 返回 400。
+- 空车间直接启动分析，真实链路因没有目标 stem 拒绝执行。
+- 没有分轨文件时请求音轨音频，真实链路返回 404。
+
+排除以上三条已知旧 mock 用例后：
+
+```text
+105 passed, 3 deselected
+```
+
+- 完整测试集在收集阶段被 4 个仓库已有的失效导入阻断：
+  - `src.utils.helpers`
+  - `src.utils.naming`
+  - `src.separation.separator`
+  - `src.core.workspace`
+- 以下检查通过：
+  - JavaScript `node --check`
+  - Python `py_compile`
+  - `git diff --check`
+
+## 2026-07-16：Tab3 `run all selected` 并发卡在 5% 修复
+
+### 现象
+
+- 单独点击某条音轨的 `run`，等待完成后再运行下一条，可以正常完成。
+- 点击 `run all selected` 后，多个音轨同时进入运行状态，并一起停在约 5%。
+
+### 根因
+
+- 前端旧实现中的 `await handleRunAnalysis(track)` 只等待
+  `POST /api/workshops/{wid}/analyze` 返回“任务已启动”，不等待该轨道真实推理完成。
+- 循环会在很短时间内为全部已选音轨创建后台任务。
+- Kernel 每个任务启动前都会把目标 stem 写入同一个全局 `ResourceController`，
+  Orchestrator 随即创建独立异步推理任务。多个任务并发使用共享 buffer、模型缓存和
+  GPU 资源，与逐轨运行的资源使用方式不同。
+
+### 修改
+
+- `src/ui/static/js/app.js`
+  - 新增 `analysisBatchQueue`、`analysisBatchCurrent` 和
+    `analysisBatchRunning`。
+  - `run all selected` 先快照每条轨道当前选择的插件，然后只启动队首任务。
+  - 只有收到当前轨道的 `analysis_done` 或 `analysis_failed` 后，才启动下一条轨道。
+  - 批量期间禁用模型下拉、单轨 Run 和重复 Run All，并显示 `queued / running` 状态。
+  - 切换车间、恢复车间或重新分离时取消旧批量队列，避免旧任务继续驱动新界面。
+- `src/ui/static/css/style.css`
+  - 新增批量等待状态颜色。
+- 静态模块版本更新为 `20260716e`。
+
+### 回归测试
+
+新增：
+
+```text
+tests/js/tab3_run_all.test.mjs
+```
+
+测试模拟 piano 和 guitar 两条已选轨道，验证：
+
+1. 点击 Run All 后，在任何终态 SSE 前只启动第一条轨道。
+2. 第一条收到 `analysis_done` 后才启动第二条轨道。
+
+修复前：
+
+```text
+2 !== 1
+only the first analysis may start before its terminal SSE event
+```
+
+修复后：
+
+```text
+1 passed
+```
+
+## 2026-07-16：Tab4 已选音轨时间轴与同步播放
+
+### 目标
+
+- Tab4 只展示 Tab2 中已经选择的音轨。
+- 每条音轨分为波形层和和弦分析结果层。
+- 所有音轨共用一条垂直播放线。
+- 底部提供可拖拽进度条、当前时间/总时长、播放/暂停和倍速切换。
+
+### 后端
+
+- `src/ui/api/analysis.py`
+  - `GET /api/workshops/{wid}/visualization?track={name}` 在指定音轨时读取对应真实
+    separation stem，不再始终读取 raw audio。
+  - Tab3 分析任务按最新记录优先查找，恢复车间后读取该音轨最新完成的和弦结果。
+  - 没有真实和弦分析结果时返回空数组，Tab4 显示 `no chord data`，不再把 mock
+    和弦误当成模型输出。
+  - `GET /api/workshops/{wid}/audio/{track}` 改用 `FileResponse`，支持浏览器 HTTP
+    Range 请求和拖拽 seek。
+  - 更新模块说明，移除已经失效的分离、分析、可视化和音频 mock 描述。
+
+### 前端
+
+- `src/ui/static/index.html`
+  - Tab4 新增已选音轨时间轴容器和音轨数量。
+  - 底部 seek 改用真实秒数范围，并保留播放、时间和倍速控制。
+- `src/ui/static/js/app.js`
+  - 进入 Tab4 时只按 `SelectedTracks` 请求并渲染音轨。
+  - 每轨创建一层 Canvas 波形和一层按起止时间定位的和弦块。
+  - 所有轨道使用统一总时长坐标和共享红色播放线。
+  - 为每条已选 stem 创建 `HTMLAudioElement`，支持同步播放、暂停、点击时间轴 seek、
+    底部拖拽 seek 和 `0.5x / 1x / 1.5x / 2x` 倍速。
+  - 倍速切换只绑定倍速文字，点击播放按钮、时间文本和进度条不会误切换倍速。
+  - 播放期间以正在播放的主音轨时间为基准，对偏差超过 120 ms 的其他音轨纠偏。
+  - 离开 Tab4、切换或重置车间时停止播放并释放旧音频元素；异步加载使用 token
+    阻止旧车间响应覆盖当前界面。
+- `src/ui/static/css/style.css`
+  - 新增双层轨道、和弦块、共享播放线和底部长 seek 布局。
+  - 增加窄窗口横向时间轴和播放控件响应式约束，避免轨道内容被压缩重叠。
+- 静态模块版本统一更新为 `20260716f`。
+
+### 文档与测试
+
+- `docs/HTTP_API.md` 更新 track-specific waveform、真实和弦空结果和 Range 音频接口。
+- 新增回归覆盖：
+  - 指定音轨可视化使用对应 stem；
+  - 没有真实分析结果时不生成伪和弦；
+  - 音频 Range 请求返回 `206`、`Content-Range` 和指定字节数；
+  - Tab4 时间轴位于 Tab4 内容区，播放控件位于底部栏；
+  - 静态资源版本为 `20260716f`。
+
+验证结果：
+
+```text
+5 passed
+node --check src/ui/static/js/app.js             passed
+node --check src/ui/static/js/event_stream.js    passed
+node tests/js/tab3_run_all.test.mjs              1 passed
+python -m py_compile src/ui/api/analysis.py       passed
+git diff --check                                 passed
+```
+
+`tests/unit/test_http_server.py` 最终全文件运行结果为 `46 passed, 3 failed`。3 条失败均为
+开发日志前文已经记录的旧 mock 前提测试：空车间分离、空车间分析和无音频文件时请求
+音轨。5 条 Tab4 定向测试全部通过。
+
+本次尝试启动独立 UI 服务进行浏览器截图验证时，当前 PowerShell 环境同时存在
+`Path` 和 `PATH`，`Start-Process` 因重复环境键失败；备用后台命令被人工终止，且
+8000 端口未留下监听。因此本次没有声称完成浏览器视觉验证。
+
+## 2026-07-16：Tab4 共享横向缩放与已选轨道 MIDI 导出
+
+### 横向时间轴缩放
+
+- Tab4 标题栏新增缩小、缩放滑块、放大和 `1x` 重置控件，范围为 `1x ~ 16x`，
+  步长 `0.5x`。
+- 新增 `src/ui/static/js/timeline_zoom.js`，集中计算：
+  - 缩放范围约束；
+  - 放大后的共享时间轴宽度；
+  - 以当前播放时间为中心的横向滚动位置；
+  - 曲首和曲尾附近的滚动边界。
+- 所有已选轨道使用同一内容宽度和同一横向滚动容器，波形、和弦块和红色播放线保持
+  时间对齐。
+- 左侧音轨名称使用 sticky 定位，横向浏览长时间轴时仍保持可见。
+- 点击缩放按钮或拖动缩放滑块后，当前播放时间会尽量保持在可视区域中心；曲首和曲尾
+  自动限制到合法滚动范围。
+- 切换车间时缩放状态和控件显示同步重置为 `1x`。
+- Canvas 波形后备缓冲宽度限制为 16384 像素；超宽时间轴降低内部像素比，避免高倍
+  缩放和高 DPI 组合导致浏览器 Canvas 为空或内存异常。
+
+### MIDI 导出
+
+- 原 `MidiExporter` 只写入 `MIDI file placeholder` 文本，本次新增
+  `export_chord_tracks_to_midi()`，通过项目已有的 `pretty_midi` 生成可被标准软件
+  读取的二进制 MIDI。
+- 每条当前已选音轨对应一个 MIDI instrument track：
+  - BASS 使用低音区和电贝司音色；
+  - GUITAR 使用吉他音区和音色；
+  - PIANO、VOCALS、DRUMS、OTHER 使用各自预设 program。
+- 支持 major、minor、dim、aug、sus2、sus4、6、7、maj7 等常见和弦质量；
+  `N / X / NO_CHORD` 不生成音符。
+- 新增 `GET /api/workshops/{wid}/midi?tracks=...`：
+  - 只允许导出当前 `SelectedTracks` 的子集；
+  - 按 Workshop 中最新完成的和弦分析结果生成 MIDI；
+  - 任一请求音轨没有有效和弦结果时返回 HTTP 409；
+  - 成功返回 `audio/midi` 和 `.mid` 附件。
+- Tab4 新增 `export MIDI` 按钮。前端请求 Blob 后触发浏览器下载，文件名使用服务端
+  `Content-Disposition`。
+- 本次 MIDI 是“和弦分析区间转多轨和弦音符”，不冒充尚未接入音高/旋律识别模型的
+  audio-to-MIDI 旋律转录。
+
+### UI 与缓存版本
+
+- Tab4 工具栏在桌面端横向排列，在窄屏下换行，缩放和导出按钮不会覆盖轨道内容。
+- `src/ui/static/index.html`、`app.js`、`api.js`、`event_stream.js` 和 waveform
+  import 的静态版本更新为 `20260716g`。
+
+### 测试
+
+- 新增 `tests/js/tab4_zoom.test.mjs`：
+  - 当前播放到 50% 且放大到 `4x` 时，滚动位置保持播放点居中；
+  - 缩放范围、曲首和曲尾滚动位置正确限制。
+- 新增 `tests/unit/test_midi_exporter.py`：
+  - 导出的字节以标准 MIDI 结构写出，并可被 `pretty_midi.PrettyMIDI` 重新读取；
+  - 多个已选轨道生成多个 instrument track；
+  - 空数据和无和弦数据被拒绝。
+- HTTP 回归覆盖：
+  - 只导出当前已选音轨；
+  - 返回 `audio/midi` 和 `MThd` 标准文件头；
+  - 请求未选音轨返回 HTTP 409；
+  - Tab4 HTML 包含缩放和 MIDI 导出控件。
+
+红灯阶段：
+
+```text
+ImportError: cannot import name 'export_chord_tracks_to_midi'
+```
+
+首轮绿灯：
+
+```text
+JavaScript zoom tests: 2 passed
+MIDI / HTTP focused tests: 5 passed
+```
+
+最终验证：
+
+```text
+JavaScript zoom tests                         2 passed
+Tab3 run-all regression                      1 passed
+MIDI + HTTP（排除 3 条旧 mock 用例）          50 passed, 3 deselected
+MIDI + HTTP（完整运行）                       50 passed, 3 failed
+Python py_compile                            passed
+JavaScript node --check                      passed
+git diff --check                             passed
+```
+
+完整运行中的 3 条失败仍是前文记录的旧 mock 前提：空车间分离、空车间分析和无音频时
+请求音轨。`ruff` 在 `D:\anaconda\envs\pyq` 中未安装，因此本次无法运行 ruff 检查。
+
+本地服务通过独立无窗口进程启动，`http://127.0.0.1:8000/` 返回 HTTP 200，浏览器成功
+加载静态版本 `20260716g`。默认 cache 当时没有可进入的已完成 Tab4 车间，浏览器控制层
+又不允许只在页面内存中注入模拟 DOM，因此没有声称完成真实轨道的截图验证；验证过程
+没有新建或修改车间数据。

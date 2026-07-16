@@ -1,6 +1,6 @@
 {
   "WorkshopName": "梦的光点-王心凌",
-  "LastTab": "Tab1",
+  "LastTab": "Tab3",
   "TabState": {
     "Tab1": {
       "RawAudioFilePath": "raw_audio\\梦的光点-王心凌.mp3"
@@ -16,9 +16,20 @@
         "piano": "track_audio\\track_piano\\separation_bs_roformer_piano.wav",
         "guitar": "track_audio\\track_guitar\\separation_bs_roformer_guitar.wav",
         "other": "track_audio\\track_other\\separation_bs_roformer_other.wav"
+      },
+      "SelectedTracks": [
+        "vocals",
+        "guitar"
+      ]
+    },
+    "Tab3": {
+      "vocals::44548412": {
+        "AnalysisToolName": "chord_chordnet_2e1d",
+        "AnalysisState": "running",
+        "AnalysisResultPath": null,
+        "AnalysisTaskId": "44548412"
       }
     },
-    "Tab3": {},
     "Tab4": {}
   }
 }

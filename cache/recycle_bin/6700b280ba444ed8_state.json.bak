@@ -1,0 +1,60 @@
+{
+  "WorkshopName": "梦的光点-王心凌",
+  "LastTab": "Tab1",
+  "TabState": {
+    "Tab1": {
+      "RawAudioFilePath": "raw_audio\\梦的光点-王心凌.mp3"
+    },
+    "Tab2": {
+      "SeparationState": "done",
+      "SeparationModelName": "separation_bs_roformer",
+      "SeparationModelPath": "E:\\raungong\\tb\\TABsucks\\src\\plugins\\separation\\model_1",
+      "TrackAudioFilePath": {
+        "vocals": "track_audio\\track_vocals\\separation_bs_roformer_vocals.wav",
+        "drums": "track_audio\\track_drums\\separation_bs_roformer_drums.wav",
+        "bass": "track_audio\\track_bass\\separation_bs_roformer_bass.wav",
+        "piano": "track_audio\\track_piano\\separation_bs_roformer_piano.wav",
+        "guitar": "track_audio\\track_guitar\\separation_bs_roformer_guitar.wav",
+        "other": "track_audio\\track_other\\separation_bs_roformer_other.wav"
+      },
+      "SelectedTracks": [
+        "vocals",
+        "drums",
+        "bass"
+      ]
+    },
+    "Tab3": {
+      "vocals::0fa81908": {
+        "AnalysisToolName": "chord_chordnet_2e1d",
+        "AnalysisState": "done",
+        "AnalysisResultPath": "analysis_result\\chord_chordnet_2e1d_result\\result_0fa81908.json",
+        "AnalysisTaskId": "0fa81908"
+      },
+      "drums::aaba861b": {
+        "AnalysisToolName": "chord_chordnet_2e1d",
+        "AnalysisState": "done",
+        "AnalysisResultPath": "analysis_result\\chord_chordnet_2e1d_result\\result_aaba861b.json",
+        "AnalysisTaskId": "aaba861b"
+      },
+      "bass::d2c146d9": {
+        "AnalysisToolName": "chord_chordnet_2e1d",
+        "AnalysisState": "done",
+        "AnalysisResultPath": "analysis_result\\chord_chordnet_2e1d_result\\result_d2c146d9.json",
+        "AnalysisTaskId": "d2c146d9"
+      },
+      "piano::63975350": {
+        "AnalysisToolName": "chord_btc_sl",
+        "AnalysisState": "done",
+        "AnalysisResultPath": "analysis_result\\chord_btc_sl_result\\result_63975350.json",
+        "AnalysisTaskId": "63975350"
+      },
+      "vocals::2a09842b": {
+        "AnalysisToolName": "chord_chordnet_2e1d",
+        "AnalysisState": "done",
+        "AnalysisResultPath": "analysis_result\\chord_chordnet_2e1d_result\\result_2a09842b.json",
+        "AnalysisTaskId": "2a09842b"
+      }
+    },
+    "Tab4": {}
+  }
+}
