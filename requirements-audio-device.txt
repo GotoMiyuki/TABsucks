@@ -1,0 +1,5 @@
+# Optional native Python audio-device playback backend
+#
+# The browser-based TABsucks UI does not require this file.
+
+sounddevice>=0.4,<0.6

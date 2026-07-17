@@ -1,40 +1,16 @@
-# TABsucks 生产环境依赖
+# TABsucks default source runtime (CPU inference)
+#
+# Intended for 64-bit Python 3.10. The CPU dependency set has not yet been
+# validated in a clean Windows environment.
 
-# Web 服务
-fastapi>=0.110.0
-uvicorn[standard]>=0.27.0
-python-multipart>=0.0.9
+-r requirements-base.txt
 
-# 音频处理
-librosa>=0.10.0
-soundfile>=0.12.0
-numpy>=1.24.0
-sounddevice>=0.4.0          # 跨平台音频播放（FR-05）
+# Explicit CPU PyTorch wheels. Using the local version suffix prevents pip
+# from silently choosing a CUDA build.
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch==2.6.0+cpu
+torchaudio==2.6.0+cpu
 
-# 深度学习（BS-RoFormer 音频分离）
-torch>=2.0.0
-torchaudio>=2.0.0
-audio-separator>=0.12.0
-onnxruntime-gpu>=1.16.0
-
-# 系统依赖（需单独安装）
-# ffmpeg - 请通过系统包管理器安装，例如：
-#   Ubuntu/Debian: sudo apt install ffmpeg
-#   macOS: brew install ffmpeg
-#   Windows: 下载预编译包或使用 choco install ffmpeg
-
-demucs>=4.0.0
-
-#基础节奏、和弦识别
-pretty_midi>=0.2.9
-h5py>=2.9.0
-matplotlib>=2.2.4
-mir_eval>=0.5
-pydub>=0.23.1
-joblib>=0.13.2
-figures>=0.3.16
-jams>=0.3.4
-pumpp>=0.5.0
-scikit_learn>=0.23.2
-yt-dlp>=2024.0.0
-static-ffmpeg>=0.4.0
+# audio-separator does not install an ONNX backend unless an extra is chosen.
+audio-separator[cpu]>=0.44,<0.45
+onnxruntime>=1.17,<2

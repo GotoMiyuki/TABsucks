@@ -5,6 +5,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 import soundfile as sf
+import torch
 
 from src.plugins.separation.model_1.separator import SeparationPlugin, SeparatorError
 
@@ -36,6 +37,38 @@ class _UnreadableOutputSeparator(_FakeAudioSeparator):
             path.write_bytes(b"not a wav file")
             self.output_paths.append(path)
         return [path.name for path in self.output_paths]
+
+
+def test_init_engine_forces_cpu_execution(monkeypatch, tmp_path: Path) -> None:
+    created: list[object] = []
+
+    class FakeEngine:
+        def __init__(self, **kwargs) -> None:
+            self.output_dir = kwargs["output_dir"]
+            self.torch_device = torch.device("cuda")
+            self.onnx_execution_provider = ["CUDAExecutionProvider"]
+            self.loaded_model: str | None = None
+            created.append(self)
+
+        def load_model(self, model_name: str) -> None:
+            self.loaded_model = model_name
+
+    monkeypatch.setattr(
+        "src.plugins.separation.model_1.separator.AudioSeparator",
+        FakeEngine,
+    )
+    monkeypatch.setattr(
+        "src.plugins.separation.model_1.separator._model_directory",
+        lambda model_name: tmp_path,
+    )
+    plugin = SeparationPlugin()
+
+    plugin._init_engine("test-model.ckpt", compute_device="cpu")
+
+    engine = created[0]
+    assert engine.torch_device.type == "cpu"
+    assert engine.onnx_execution_provider == ["CPUExecutionProvider"]
+    assert engine.loaded_model == "test-model.ckpt"
 
 
 def test_separate_removes_invocation_temp_wavs(tmp_path: Path) -> None:

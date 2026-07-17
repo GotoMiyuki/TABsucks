@@ -24,28 +24,34 @@ class BassRootPlugin(Plugin):
 
     def execute(self, rc: ResourceController, **kwargs) -> dict:
         audio = rc.get_buffer("bass")
+        audio_mono = self._to_mono(audio)
         sr = rc.get_metadata("sample_rate")
         beat_timestamps = rc.get_metadata("beat_timestamps")
 
         if beat_timestamps is not None and len(beat_timestamps) >= 2:
-            progression = self._detect_progression(audio, sr, beat_timestamps)
+            progression = self._detect_progression(audio_mono, sr, beat_timestamps)
             all_roots = [e.root for e in progression if e.root not in ("N", "X")]
             global_root = max(set(all_roots), key=all_roots.count) if all_roots else "N"
         else:
             # 无外部 beat_timestamps 时，用 librosa 自动检测节拍位置
             import librosa
-            audio_mono = audio.astype(np.float64)
-            if audio_mono.ndim > 1:
-                audio_mono = np.mean(audio_mono, axis=0)
             onset_env = librosa.onset.onset_strength(y=audio_mono, sr=sr)
             _, beats = librosa.beat.beat_track(onset_envelope=onset_env, sr=sr)
             beat_timestamps = librosa.frames_to_time(beats, sr=sr).tolist()
             if len(beat_timestamps) >= 2:
-                progression = self._detect_progression(audio, sr, beat_timestamps)
+                progression = self._detect_progression(
+                    audio_mono,
+                    sr,
+                    beat_timestamps,
+                )
             else:
                 progression = []
             all_roots = [e.root for e in progression if e.root not in ("N", "X")]
-            global_root = max(set(all_roots), key=all_roots.count) if all_roots else self._detect_root(audio, sr)
+            global_root = (
+                max(set(all_roots), key=all_roots.count)
+                if all_roots
+                else self._detect_root(audio_mono, sr)
+            )
 
         rc.set_metadata("bass_root", global_root)
         rc.set_metadata("bass_progression", progression)
@@ -56,6 +62,33 @@ class BassRootPlugin(Plugin):
                 "root": global_root,
             },
         }
+
+    @staticmethod
+    def _to_mono(audio: np.ndarray) -> np.ndarray:
+        """Create a temporary mono input without replacing the shared bass buffer."""
+        samples = np.asarray(audio)
+        if samples.ndim == 1:
+            return np.ascontiguousarray(samples, dtype=np.float32)
+        if samples.ndim != 2:
+            raise ValueError(
+                f"Bass audio must be one- or two-dimensional, got {samples.shape}."
+            )
+
+        rows, columns = samples.shape
+        if columns <= 8 and rows > columns:
+            channel_axis = 1
+        elif rows <= 8 and columns > rows:
+            channel_axis = 0
+        else:
+            raise ValueError(
+                "Unable to identify the channel axis for bass audio "
+                f"with shape {samples.shape}."
+            )
+
+        return np.ascontiguousarray(
+            np.mean(samples, axis=channel_axis, dtype=np.float32),
+            dtype=np.float32,
+        )
 
     def _detect_progression(
         self, audio: np.ndarray, sr: int, beat_timestamps: list[float]
@@ -76,7 +109,7 @@ class BassRootPlugin(Plugin):
         fmax = librosa.note_to_hz("E4")
 
         f0, voiced_flag, _ = librosa.pyin(
-            audio.astype(np.float64),
+            self._to_mono(audio),
             fmin=fmin,
             fmax=fmax,
             sr=sr,
@@ -147,7 +180,7 @@ class BassRootPlugin(Plugin):
         fmax = librosa.note_to_hz("E4")
 
         f0, voiced_flag, _ = librosa.pyin(
-            audio.astype(np.float64),
+            self._to_mono(audio),
             fmin=fmin,
             fmax=fmax,
             sr=sr,

@@ -8,6 +8,7 @@
       "version": "1.0.0",
       "input_stems": [],
       "output": "separated_stems",
+      "supported_devices": ["cpu", "gpu"],
       "requirements": {
         "gpu_memory_mb": 4096,
         "ram_mb_min": 2048,

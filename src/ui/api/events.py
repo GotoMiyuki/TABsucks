@@ -48,10 +48,17 @@ async def events(request: Request) -> StreamingResponse:
         return StreamingResponse(_empty(), media_type="text/event-stream")
 
     q: Queue = kernel.bus.subscribe()
+    shutdown_event = getattr(
+        request.app.state,
+        "tabsucks_shutdown_event",
+        None,
+    )
 
     async def generate() -> Any:
         try:
             while True:
+                if shutdown_event is not None and shutdown_event.is_set():
+                    break
                 # 检查连接是否断开（client 关闭浏览器 tab 会触发）
                 if await request.is_disconnected():
                     break
@@ -61,6 +68,10 @@ async def events(request: Request) -> StreamingResponse:
                     ev = await asyncio.to_thread(q.get, True, 0.3)
                 except Empty:
                     continue
+                except RuntimeError as error:
+                    if "cannot schedule new futures after shutdown" in str(error):
+                        break
+                    raise
                 frame = json.dumps(
                     {
                         "type": ev.type,

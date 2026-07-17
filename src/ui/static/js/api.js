@@ -142,11 +142,11 @@ const api = {
         });
     },
 
-    async separate(wid, model = 'BS-RoFormer-SW') {
+    async separate(wid, model = 'BS-RoFormer-SW', device = 'gpu') {
         return this._fetchJSON(`${this._baseURL}/workshops/${wid}/separate`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ model }),
+            body: JSON.stringify({ model, device }),
         });
     },
 

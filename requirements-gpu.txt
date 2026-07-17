@@ -1,0 +1,14 @@
+# TABsucks NVIDIA GPU source runtime
+#
+# The current Windows EXE build uses PyTorch 2.6.0 with CUDA 12.4.
+# Install with the verified Windows constraints:
+#   python -m pip install -r requirements-gpu.txt -c constraints-windows.txt
+
+-r requirements-base.txt
+
+--extra-index-url https://download.pytorch.org/whl/cu124
+torch==2.6.0+cu124
+torchaudio==2.6.0+cu124
+
+audio-separator[gpu]>=0.44,<0.45
+onnxruntime-gpu>=1.17,<2

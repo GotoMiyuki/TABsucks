@@ -10,9 +10,10 @@ import json
 import math
 import random
 from pathlib import Path
+from typing import Literal
 
 from fastapi import APIRouter, File, HTTPException, Query, Request, UploadFile
-from fastapi.responses import FileResponse, Response, StreamingResponse
+from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel
 
 MOCK_DATA_DIR = (
@@ -29,6 +30,7 @@ router = APIRouter()
 
 class SeparateRequest(BaseModel):
     model: str = "BS-RoFormer-SW"
+    device: Literal["cpu", "gpu"] = "gpu"
 
 
 class AnalyzeRequest(BaseModel):
@@ -207,6 +209,7 @@ async def trigger_separation(
         kernel.start_separation_task(
             wid,
             plugin_name=req.model,
+            compute_device=req.device,
             durations_sec=3.0,
         )
     except Exception as e:  # noqa: BLE001

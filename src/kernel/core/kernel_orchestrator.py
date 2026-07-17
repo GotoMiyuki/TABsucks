@@ -48,6 +48,13 @@ def emit_progress_event(
     bus.emit(wid, event_type, payload)
 
 
+def _normalise_compute_device(device: str) -> str:
+    value = str(device).strip().lower()
+    if value not in {"cpu", "gpu"}:
+        raise PluginManagerError(f"Unsupported compute device: {device}")
+    return value
+
+
 async def call_plugin_execute_async(
     plugin,
     rc,
@@ -171,6 +178,7 @@ class Orchestrator:
         plugin_name: str = "example_separator",
         audio_samples=None,
         sample_rate: int = 22050,
+        compute_device: str = "gpu",
         progress_event: str = "separation_progress",
         durations_sec: float = 3.0,
     ) -> asyncio.Task:
@@ -184,7 +192,36 @@ class Orchestrator:
 
         async def _run() -> dict[str, Any]:
             resolved_plugin = self._resolve_separator_name(plugin_name)
-            bus.emit(wid, "separation_started", {"plugin": resolved_plugin})
+            requested_device = _normalise_compute_device(compute_device)
+            try:
+                plugin = self._ensure_plugin(resolved_plugin)
+                if plugin is None:
+                    raise PluginManagerError(f"plugin not found: {resolved_plugin}")
+                effective_device = self._resolve_separation_device(
+                    resolved_plugin,
+                    requested_device,
+                )
+            except PluginManagerError as error:
+                bus.emit(
+                    wid,
+                    "separation_failed",
+                    {
+                        "plugin": resolved_plugin,
+                        "requested_device": requested_device,
+                        "error": str(error),
+                    },
+                )
+                return {"status": "failed", "error": str(error)}
+
+            bus.emit(
+                wid,
+                "separation_started",
+                {
+                    "plugin": resolved_plugin,
+                    "requested_device": requested_device,
+                    "effective_device": effective_device,
+                },
+            )
             cb = make_progress_callback(bus, wid, progress_event)
             emit_progress_event(
                 bus,
@@ -195,20 +232,10 @@ class Orchestrator:
                 stage="loading_plugin",
             )
 
-            try:
-                plugin = self._ensure_plugin(resolved_plugin)
-            except PluginManagerError as e:
-                bus.emit(wid, "separation_failed", {"plugin": resolved_plugin, "error": str(e)})
-                return {"status": "failed", "error": str(e)}
-
-            if plugin is None:
-                message = f"plugin not found: {resolved_plugin}"
-                bus.emit(wid, "separation_failed", {"plugin": resolved_plugin, "error": message})
-                return {"status": "failed", "error": message}
-
             is_manifest_plugin = self.pm.get_manifest(resolved_plugin) is not None
+            vram_reserved = False
             try:
-                if is_manifest_plugin:
+                if is_manifest_plugin and effective_device == "gpu":
                     emit_progress_event(
                         bus,
                         wid,
@@ -220,6 +247,7 @@ class Orchestrator:
                     vram = self.pm.prepare_vram(resolved_plugin)
                     if not vram.get("ready", False):
                         raise PluginManagerError(vram.get("message", "VRAM is not ready"))
+                    vram_reserved = True
 
                 emit_progress_event(
                     bus,
@@ -234,16 +262,35 @@ class Orchestrator:
                     self.rc,
                     durations_sec=durations_sec,
                     progress_callback=cb,
+                    compute_device=effective_device,
                 )
                 cb(1.0)
                 stems = result.get("data", {}).get("stems", []) if isinstance(result, dict) else []
-                bus.emit(wid, "separation_done", {"plugin": resolved_plugin, "stems": stems})
+                bus.emit(
+                    wid,
+                    "separation_done",
+                    {
+                        "plugin": resolved_plugin,
+                        "stems": stems,
+                        "requested_device": requested_device,
+                        "effective_device": effective_device,
+                    },
+                )
                 return result
             except Exception as e:  # noqa: BLE001
-                bus.emit(wid, "separation_failed", {"plugin": resolved_plugin, "error": str(e)})
+                bus.emit(
+                    wid,
+                    "separation_failed",
+                    {
+                        "plugin": resolved_plugin,
+                        "requested_device": requested_device,
+                        "effective_device": effective_device,
+                        "error": str(e),
+                    },
+                )
                 return {"status": "failed", "error": str(e)}
             finally:
-                if is_manifest_plugin:
+                if is_manifest_plugin and vram_reserved:
                     self.rc.release_vram(resolved_plugin)
 
         try:
@@ -251,6 +298,38 @@ class Orchestrator:
         except RuntimeError:
             loop = asyncio.new_event_loop()
         return loop.create_task(_run())
+
+    def _resolve_separation_device(
+        self,
+        plugin_name: str,
+        requested_device: str,
+    ) -> str:
+        """Resolve a device request against plugin capability and local hardware."""
+        manifest = self.pm.get_manifest(plugin_name)
+        supported = {"cpu"}
+        if manifest is not None:
+            declared = manifest.get("supported_devices", ["cpu"])
+            if isinstance(declared, list):
+                supported = {
+                    str(item).strip().lower()
+                    for item in declared
+                    if str(item).strip().lower() in {"cpu", "gpu"}
+                } or {"cpu"}
+
+        if requested_device in supported:
+            effective_device = requested_device
+        elif "cpu" in supported:
+            effective_device = "cpu"
+        else:
+            effective_device = "gpu"
+
+        if effective_device == "gpu":
+            gpu_info = self.rc.get_gpu_info()
+            if not gpu_info.get("cuda_available", False):
+                raise PluginManagerError(
+                    f"GPU was requested for {plugin_name}, but CUDA is unavailable."
+                )
+        return effective_device
 
     def start_analysis(
         self,

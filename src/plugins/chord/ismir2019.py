@@ -1,17 +1,20 @@
 # ismir2019_plugin.py (重构版)
+import logging
 import os
-import sys
 import subprocess
+import sys
 import tempfile
-import soundfile as sf
-from typing import Dict, Any
+from typing import Any
 
-from src.plugins import BasePlugin
+import soundfile as sf
+
 from src.kernel.core.resource_controller import ResourceController
+from src.plugins import BasePlugin
 
 # 指向外部仓库根目录 — 使用绝对路径避免 cwd 拼接问题
 EXTERNAL_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "external", "ismir2019"))
 CHORD_PY = os.path.join(EXTERNAL_DIR, "chord_recognition.py")
+logger = logging.getLogger(__name__)
 
 class ISMIR2019ChordPlugin(BasePlugin):
     """
@@ -31,7 +34,7 @@ class ISMIR2019ChordPlugin(BasePlugin):
             raise FileNotFoundError(f"Critical: {CHORD_PY} not found.")
         print(f"[{self.name}] Ready to call external chord recognition script.")
 
-    def execute(self, rc: ResourceController, **kwargs) -> Dict[str, Any]:
+    def execute(self, rc: ResourceController, **kwargs) -> dict[str, Any]:
         stem_name = kwargs.get("stem_name", "piano")
         audio = rc.get_buffer(stem_name)
         sr = rc.get_metadata("sample_rate") or 22050
@@ -46,9 +49,35 @@ class ISMIR2019ChordPlugin(BasePlugin):
             lab_path = tmp_lab.name
 
         # 3. 构建并执行命令 (使用默认 'submission' chord_dict)
-        cmd = ["python", CHORD_PY, wav_path, lab_path]
+        if getattr(sys, "frozen", False):
+            cmd = [
+                sys.executable,
+                "--tabsucks-run-script",
+                CHORD_PY,
+                wav_path,
+                lab_path,
+            ]
+        else:
+            cmd = [sys.executable, CHORD_PY, wav_path, lab_path]
         print(f"[{self.name}] Running: {' '.join(cmd)}")
-        subprocess.run(cmd, check=True, cwd=EXTERNAL_DIR)
+        try:
+            completed = subprocess.run(
+                cmd,
+                check=True,
+                cwd=EXTERNAL_DIR,
+                capture_output=True,
+                text=True,
+            )
+        except subprocess.CalledProcessError as error:
+            if error.stdout and error.stdout.strip():
+                logger.error("ISMIR2019 output:\n%s", error.stdout.rstrip())
+            if error.stderr and error.stderr.strip():
+                logger.error("ISMIR2019 diagnostics:\n%s", error.stderr.rstrip())
+            raise
+        if completed.stdout.strip():
+            logger.info("ISMIR2019 output:\n%s", completed.stdout.rstrip())
+        if completed.stderr.strip():
+            logger.warning("ISMIR2019 diagnostics:\n%s", completed.stderr.rstrip())
 
         # 4. 读取并解析生成的标签文件
         chords = self._parse_lab(lab_path)
@@ -67,7 +96,7 @@ class ISMIR2019ChordPlugin(BasePlugin):
         返回一个包含时间戳和和弦的列表。
         """
         results = []
-        with open(lab_path, "r") as f:
+        with open(lab_path) as f:
             for line in f:
                 line = line.strip()
                 if not line:

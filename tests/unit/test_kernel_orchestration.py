@@ -61,6 +61,88 @@ class TestProgressCallback:
 
 
 class TestStartSeparation:
+    def test_gpu_request_falls_back_to_cpu_for_cpu_only_plugin(self) -> None:
+        class CpuOnlyPlugin:
+            name = "cpu_only_separator"
+            captured_device: str | None = None
+
+            def execute(self, rc, **kwargs):
+                self.captured_device = kwargs["compute_device"]
+                return {"status": "success", "data": {"stems": []}}
+
+        bus = EventBus()
+        orch = Orchestrator()
+        plugin = CpuOnlyPlugin()
+        orch.pm.register(plugin)
+        sub_q = bus.subscribe()
+
+        async def runner():
+            await orch.start_separation(
+                "wid_cpu_only",
+                bus,
+                plugin_name=plugin.name,
+                audio_samples=np.zeros(128, dtype=np.float32),
+                compute_device="gpu",
+                durations_sec=0.0,
+            )
+
+        asyncio.run(runner())
+
+        assert plugin.captured_device == "cpu"
+        started = next(
+            event
+            for event in _drain_queue_until_terminal(sub_q)
+            if event.type == "separation_started"
+        )
+        assert started.payload["requested_device"] == "gpu"
+        assert started.payload["effective_device"] == "cpu"
+
+    def test_gpu_capable_plugin_receives_gpu_request(
+        self,
+        monkeypatch,
+    ) -> None:
+        class GpuPlugin:
+            name = "gpu_separator"
+            captured_device: str | None = None
+
+            def execute(self, rc, **kwargs):
+                self.captured_device = kwargs["compute_device"]
+                return {"status": "success", "data": {"stems": []}}
+
+        bus = EventBus()
+        orch = Orchestrator()
+        plugin = GpuPlugin()
+        orch.pm.register(plugin)
+        orch.pm._manifests[plugin.name] = {
+            "name": plugin.name,
+            "supported_devices": ["cpu", "gpu"],
+            "requirements": {"gpu_memory_mb": 1},
+        }
+        monkeypatch.setattr(
+            orch.rc,
+            "get_gpu_info",
+            lambda: {"cuda_available": True},
+        )
+        monkeypatch.setattr(
+            orch.pm,
+            "prepare_vram",
+            lambda name: {"ready": True},
+        )
+
+        async def runner():
+            await orch.start_separation(
+                "wid_gpu",
+                bus,
+                plugin_name=plugin.name,
+                audio_samples=np.zeros(128, dtype=np.float32),
+                compute_device="gpu",
+                durations_sec=0.0,
+            )
+
+        asyncio.run(runner())
+
+        assert plugin.captured_device == "gpu"
+
     def test_emits_started_progress_done(self) -> None:
         """完整链：started → progress×N → done。"""
         bus = EventBus()

@@ -328,6 +328,7 @@ class Kernel:
         plugin_name: str = "example_separator",
         audio_samples=None,
         sample_rate: int = 22050,
+        compute_device: str = "gpu",
         durations_sec: float = 3.0,
     ):
         """异步启动分离任务。
@@ -358,6 +359,7 @@ class Kernel:
             wid,
             self.bus,
             plugin_name=plugin_name,
+            compute_device=compute_device,
             durations_sec=durations_sec,
         )
         return asyncio.create_task(

@@ -1,20 +1,6 @@
 {
   "plugins": [
-    {
-      "name": "chord_chordnet_2e1d",
-      "class": "ChordNet2E1DPlugin",
-      "entrypoint": "src.plugins.chord.chordnet_2e1d",
-      "display_name": "ChordNet 2E1D Chord Recognizer (ChordMini)",
-      "version": "1.0.0",
-      "input_stems": ["vocals", "drums", "bass", "piano", "guitar", "other"],
-      "output": "component_chord_labels",
-      "requirements": {
-        "gpu_memory_mb": 1024,
-        "ram_mb_min": 512,
-        "python_packages": ["torch", "librosa", "numpy"]
-      },
-      "phase": "post-separation"
-    },
+    
     {
       "name": "chord_btc_sl",
       "class": "BTCSLChordPlugin",
@@ -44,20 +30,7 @@
         "python_packages": ["torch", "librosa"]
       },
       "phase": "post-separation"
-    },
-    {
-      "name": "chord_bass_root",
-      "class": "BassRootPlugin",
-      "entrypoint": "src.plugins.chord.bass_root",
-      "display_name": "Bass Root Detector",
-      "version": "1.0.0",
-      "input_stems": ["bass"],
-      "output": "root_note",
-      "requirements": {
-        "gpu_memory_mb": 0,
-        "ram_mb_min": 128
-      },
-      "phase": "post-separation"
     }
+   
   ]
 }

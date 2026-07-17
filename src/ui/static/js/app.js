@@ -651,6 +651,7 @@ async function triggerSeparation() {
     }
     const sel = document.getElementById('sel-separator');
     const model = sel?.value;
+    const device = document.querySelector('input[name="sep-device"]:checked')?.value || 'gpu';
     if (!model) {
         showToast('请先在下拉列表中选择分离模型', 'warning');
         return;
@@ -680,7 +681,7 @@ async function triggerSeparation() {
     updateNavigationControls();
     // 显示进度环
     document.getElementById('sep-ring-wrap-2')?.classList.remove('hidden');
-    const r = await api.separate(wid, model);
+    const r = await api.separate(wid, model, device);
     if (state.currentWid !== wid) return;
     if (!r.ok) {
         state.separating = false;

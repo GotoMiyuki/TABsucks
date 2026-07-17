@@ -1,0 +1,31 @@
+# TABsucks common runtime dependencies
+#
+# Keep this file limited to packages imported directly by the application or
+# by the bundled, active plugins. Transitive packages are resolved by pip and
+# tested versions are recorded in constraints-windows.txt.
+
+# Local Web application
+fastapi>=0.139,<0.140
+uvicorn>=0.51,<0.52
+python-multipart>=0.0.32,<0.1
+pydantic>=2.13,<3
+
+# Audio loading, analysis, playback, and downloads
+numpy>=2.2,<3
+librosa>=0.11,<0.12
+soundfile>=0.13,<0.14
+static-ffmpeg>=3,<4
+yt-dlp>=2026.3,<2027
+PyYAML>=6,<7
+
+# MIDI export and resource checks
+pretty-midi>=0.2.11,<0.3
+psutil>=7.2,<8
+
+# Bundled legacy ISMIR2019 plugin
+h5py>=3.16,<4
+joblib>=1.5,<2
+pydub>=0.25,<0.26
+
+# The optional native Python audio player uses sounddevice. The current Web UI
+# plays audio in the browser and does not require it; see requirements-audio-device.txt.

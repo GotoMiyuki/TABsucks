@@ -1,6 +1,6 @@
 {
   "WorkshopName": "梦的光点-王心凌",
-  "LastTab": "Tab3",
+  "LastTab": "Tab2",
   "TabState": {
     "Tab1": {
       "RawAudioFilePath": "raw_audio\\梦的光点-王心凌.mp3"
@@ -18,16 +18,27 @@
         "other": "track_audio\\track_other\\separation_bs_roformer_other.wav"
       },
       "SelectedTracks": [
-        "vocals",
-        "guitar"
+        "bass"
       ]
     },
     "Tab3": {
-      "vocals::44548412": {
-        "AnalysisToolName": "chord_chordnet_2e1d",
-        "AnalysisState": "running",
-        "AnalysisResultPath": null,
-        "AnalysisTaskId": "44548412"
+      "vocals::7b8dd428": {
+        "AnalysisToolName": "chord_ismir2019",
+        "AnalysisState": "done",
+        "AnalysisResultPath": "analysis_result\\chord_ismir2019_result\\result_7b8dd428.json",
+        "AnalysisTaskId": "7b8dd428"
+      },
+      "piano::0db9b1cb": {
+        "AnalysisToolName": "chord_ismir2019",
+        "AnalysisState": "done",
+        "AnalysisResultPath": "analysis_result\\chord_ismir2019_result\\result_0db9b1cb.json",
+        "AnalysisTaskId": "0db9b1cb"
+      },
+      "bass::23b0fa56": {
+        "AnalysisToolName": "chord_bass_root",
+        "AnalysisState": "done",
+        "AnalysisResultPath": "analysis_result\\chord_bass_root_result\\result_23b0fa56.json",
+        "AnalysisTaskId": "23b0fa56"
       }
     },
     "Tab4": {}

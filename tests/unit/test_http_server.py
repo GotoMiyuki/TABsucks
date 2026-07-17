@@ -268,6 +268,63 @@ class TestSSE:
         assert '"type": "test_event"' in frame
         assert elapsed < 0.2
 
+    def test_sse_stream_ends_quietly_during_executor_shutdown(
+        self,
+        monkeypatch,
+    ) -> None:
+        subscribed = asyncio.Queue()
+        unsubscribed: list[object] = []
+        bus = SimpleNamespace(
+            subscribe=lambda: subscribed,
+            unsubscribe=lambda queue: unsubscribed.append(queue),
+        )
+        request = SimpleNamespace(
+            app=SimpleNamespace(
+                state=SimpleNamespace(kernel=SimpleNamespace(bus=bus)),
+            ),
+            is_disconnected=lambda: asyncio.sleep(0, result=False),
+        )
+
+        async def executor_is_closed(*args, **kwargs):
+            raise RuntimeError("cannot schedule new futures after shutdown")
+
+        monkeypatch.setattr(asyncio, "to_thread", executor_is_closed)
+
+        async def scenario() -> None:
+            response = await events(request)
+            with pytest.raises(StopAsyncIteration):
+                await anext(response.body_iterator)
+
+        asyncio.run(scenario())
+
+        assert unsubscribed == [subscribed]
+
+    def test_sse_stream_ends_when_local_server_is_stopping(self) -> None:
+        subscribed = asyncio.Queue()
+        unsubscribed: list[object] = []
+        bus = SimpleNamespace(
+            subscribe=lambda: subscribed,
+            unsubscribe=lambda queue: unsubscribed.append(queue),
+        )
+        request = SimpleNamespace(
+            app=SimpleNamespace(
+                state=SimpleNamespace(
+                    kernel=SimpleNamespace(bus=bus),
+                    tabsucks_shutdown_event=SimpleNamespace(is_set=lambda: True),
+                ),
+            ),
+            is_disconnected=lambda: asyncio.sleep(0, result=False),
+        )
+
+        async def scenario() -> None:
+            response = await events(request)
+            with pytest.raises(StopAsyncIteration):
+                await anext(response.body_iterator)
+
+        asyncio.run(scenario())
+
+        assert unsubscribed == [subscribed]
+
 
 # ---------------------------------------------------------------------------
 # SSE 端到端 smoke test（separate process 跑）
@@ -436,6 +493,38 @@ class TestMockEndpoints:
         )
         assert r.status_code == 200
         assert r.json()["ok"] is True
+
+    def test_separate_passes_selected_compute_device(
+        self,
+        kernel_and_client,
+        monkeypatch,
+    ) -> None:
+        kernel, client = kernel_and_client
+        wid = kernel.create_workshop("Device")["id"]
+        captured: dict[str, object] = {}
+
+        def fake_start_separation_task(workshop_id: str, **kwargs):
+            captured["wid"] = workshop_id
+            captured.update(kwargs)
+            return None
+
+        monkeypatch.setattr(
+            kernel,
+            "start_separation_task",
+            fake_start_separation_task,
+        )
+
+        response = client.post(
+            f"/api/workshops/{wid}/separate",
+            json={
+                "model": "separation_bs_roformer",
+                "device": "cpu",
+            },
+        )
+
+        assert response.status_code == 200
+        assert captured["wid"] == wid
+        assert captured["compute_device"] == "cpu"
 
     def test_get_analysis_results_reads_persisted_json(
         self, kernel_and_client
@@ -708,6 +797,21 @@ class TestStaticFiles:
         analyzer_config = html.index('id="analysis-config-list"')
         assert step2 < track_selection < step3 < analyzer_config
         assert 'id="phase-analyze"' not in html
+
+    def test_tab2_exposes_separation_compute_device(
+        self,
+        kernel_and_client,
+    ) -> None:
+        _, client = kernel_and_client
+
+        html = client.get("/").text
+        app_js = client.get("/static/js/app.js").text
+        api_js = client.get("/static/js/api.js").text
+
+        assert 'name="sep-device" value="gpu"' in html
+        assert 'name="sep-device" value="cpu"' in html
+        assert "api.separate(wid, model, device)" in app_js
+        assert "JSON.stringify({ model, device })" in api_js
 
     def test_tab4_has_selected_track_timeline_and_playback_controls(
         self, kernel_and_client

@@ -164,6 +164,46 @@ class TestDetectProgression:
 class TestExecute:
     """execute 方法集成测试。"""
 
+    @pytest.mark.parametrize("channel_first", [False, True])
+    def test_stereo_bass_is_temporarily_mixed_to_mono(
+        self,
+        channel_first: bool,
+    ) -> None:
+        sr = 22050
+        n_samples = sr * 2
+        stereo = np.column_stack(
+            (
+                np.full(n_samples, 0.25, dtype=np.float32),
+                np.full(n_samples, 0.75, dtype=np.float32),
+            )
+        )
+        stored_bass = stereo.T if channel_first else stereo
+        f0 = np.full(100, 110.0)
+        voiced = np.ones(100, dtype=bool)
+        mock_librosa = _make_mock_librosa(
+            pyin_return=(f0, voiced, np.zeros(100))
+        )
+        sys.modules["librosa"] = mock_librosa
+        try:
+            from src.plugins.chord.bass_root import BassRootPlugin
+
+            plugin = BassRootPlugin()
+            rc = ResourceController()
+            rc.set_buffer("bass", stored_bass)
+            rc.set_metadata("sample_rate", sr)
+            rc.set_metadata("beat_timestamps", [0.0, 0.5, 1.0])
+
+            plugin.execute(rc)
+
+            pyin_audio = mock_librosa.pyin.call_args.args[0]
+            assert pyin_audio.shape == (n_samples,)
+            assert pyin_audio.dtype == np.float32
+            assert np.allclose(pyin_audio, 0.5)
+            assert rc.get_buffer("bass") is stored_bass
+            assert rc.get_buffer("bass").shape == stored_bass.shape
+        finally:
+            del sys.modules["librosa"]
+
     def test_returns_root_and_progression(self) -> None:
         """返回值应包含 root 和 bass_progression。"""
         sr = 22050

@@ -21,12 +21,10 @@ from typing import Any
 
 import numpy as np
 import soundfile as sf
-
-from src.plugins import BasePlugin
-from src.kernel.core.resource_controller import ResourceController
-
-# 引入核心分离引擎
 from audio_separator.separator import Separator as AudioSeparator
+
+from src.kernel.core.resource_controller import ResourceController
+from src.plugins import BasePlugin
 
 # ================= 硬件控制开关 =================
 #########强制本地加载
@@ -46,6 +44,19 @@ os.environ["HF_HUB_OFFLINE"] = "0"
 SUPPORTED_MODELS = [
     "BS-Roformer-SW.yaml",  # audio-separator 库内置的 6 轨配置文件名称
 ]
+
+
+def _model_directory(model_name: str) -> Path:
+    bundled_root = os.environ.get("TABSUCKS_BUNDLED_MODELS")
+    if bundled_root:
+        bundled_path = Path(bundled_root)
+        if (bundled_path / model_name).is_file():
+            return bundled_path
+
+    cache_root = os.environ.get("TABSUCKS_MODEL_CACHE")
+    model_root = Path(cache_root) if cache_root else Path("models")
+    model_root.mkdir(parents=True, exist_ok=True)
+    return model_root
 
 
 class TrackId(Enum):
@@ -99,6 +110,8 @@ class SeparationPlugin(BasePlugin):
         super().__init__()
         self.model_name = model_name
         self._separator_instance = None  # 延迟加载实例，避免启动软件时卡死
+        self._separator_device: str | None = None
+        self._separator_model_name: str | None = None
 
     # ---------- BasePlugin 接口 ----------
 
@@ -125,7 +138,9 @@ class SeparationPlugin(BasePlugin):
             包含 status 和 data 的规范化结果字典。
         """
         model_name = kwargs.get("model_name", self.model_name)
+        compute_device = str(kwargs.get("compute_device", "gpu")).lower()
         print(f"[{self.name}] Starting 6-stem separation with model: {model_name}")
+        print(f"[{self.name}] Compute device: {compute_device}")
 
         # 1. 从 ResourceController 获取原始音频
         raw_audio = rc.get_buffer("raw")
@@ -136,7 +151,12 @@ class SeparationPlugin(BasePlugin):
             raw_audio = raw_audio[np.newaxis, :]
 
         # 2. 执行分离
-        result = self._separate(raw_audio, sample_rate, model_name)
+        result = self._separate(
+            raw_audio,
+            sample_rate,
+            model_name,
+            compute_device=compute_device,
+        )
 
         # 3. 回写各 stem buffer 到 ResourceController
         for track_id in TrackId:
@@ -155,6 +175,7 @@ class SeparationPlugin(BasePlugin):
             "status": "success",
             "data": {
                 "model": model_name,
+                "device": compute_device,
                 "sample_rate": sample_rate,
                 "stems": [t.value for t in TrackId],
             },
@@ -162,31 +183,63 @@ class SeparationPlugin(BasePlugin):
 
     # ---------- 内部引擎 ----------
 
-    def _init_engine(self, model_name: str) -> None:
+    def _init_engine(self, model_name: str, *, compute_device: str = "gpu") -> None:
         """
         初始化底层推理引擎。
         只有在真正点击"开始分离"时才会触发，顺便设定好模型缓存和输出路径。
         """
-        if self._separator_instance is None:
+        if (
+            self._separator_instance is None
+            or (
+                self._separator_device is not None
+                and self._separator_device != compute_device
+            )
+            or (
+                self._separator_model_name is not None
+                and self._separator_model_name != model_name
+            )
+        ):
             self._separator_instance = AudioSeparator(
-                model_file_dir="./models",        # 模型权重下载和存放的本地目录
+                model_file_dir=str(_model_directory(model_name)),
                 output_dir=tempfile.gettempdir(), # 分离后的中间文件临时存放在系统的 temp 目录
                 output_format="WAV",              # 保证中间文件无损
             )
+            if compute_device == "cpu":
+                import torch
+
+                self._separator_instance.torch_device = torch.device("cpu")
+                self._separator_instance.onnx_execution_provider = [
+                    "CPUExecutionProvider"
+                ]
+            elif compute_device == "gpu":
+                engine_device = getattr(self._separator_instance, "torch_device", None)
+                if engine_device is None or not str(engine_device).startswith("cuda"):
+                    raise SeparatorError(
+                        "GPU was requested, but audio-separator did not configure CUDA."
+                    )
+            else:
+                raise SeparatorError(f"Unsupported compute device: {compute_device}")
             try:
                 # 如果本地没有模型，它会自动从 HuggingFace 下载
                 self._separator_instance.load_model(model_name)
             except Exception as e:
-                raise SeparatorError(f"模型加载失败: {e}")
+                raise SeparatorError(f"模型加载失败: {e}") from e
+            self._separator_device = compute_device
+            self._separator_model_name = model_name
 
     def _separate(
-        self, audio: np.ndarray, sr: int, model_name: str
+        self,
+        audio: np.ndarray,
+        sr: int,
+        model_name: str,
+        *,
+        compute_device: str = "gpu",
     ) -> SeparationResult:
         """
         核心分离逻辑：
         内存(NumPy) -> 写入临时文件 -> 模型推理出6个临时文件 -> 读取6个文件回内存(NumPy) -> 清理垃圾
         """
-        self._init_engine(model_name)
+        self._init_engine(model_name, compute_device=compute_device)
         n_samples = audio.shape[-1]
 
         # 1. 创建一个安全的临时输入文件
@@ -287,7 +340,7 @@ class SeparationPlugin(BasePlugin):
             )
 
         except Exception as e:
-            raise SeparatorError(f"分离过程出错: {e}")
+            raise SeparatorError(f"分离过程出错: {e}") from e
 
         finally:
             # 7. 环保清理：一定要把输入的临时文件删掉，防止撑爆用户的 C 盘
