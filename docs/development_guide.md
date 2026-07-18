@@ -24,7 +24,7 @@
 
 **步骤**：
 
-1. 安装 Python 3.11+
+1. 安装 64 位 Python 3.10
 2. 克隆代码仓库
 3. 创建虚拟环境
 4. 安装依赖
@@ -42,9 +42,9 @@ python -m venv venv
 .\venv\Scripts\activate      # Windows
 # source venv/bin/activate  # Linux/macOS
 
-# 3. 安装依赖
+# 3. 安装依赖（CPU；GPU 用户改用 requirements-gpu.txt）
 pip install -r requirements.txt
-pip install -r requirements-dev.txt  # 开发/测试额外依赖
+pip install -r requirements-dev.txt
 
 # 4. 配置 pre-commit 钩子（可选）（pre-commit 配置详见 → § 基础概念/pre-commit）
 pip install pre-commit
@@ -437,12 +437,22 @@ deactivate
 **requirements.txt 管理**：
 
 ```bash
-# 安装依赖
+# CPU 运行环境
 pip install -r requirements.txt
 
-# 导出当前依赖
-pip freeze > requirements.txt
+# GPU 运行环境（二选一）
+pip install -r requirements-gpu.txt -c constraints-windows.txt
+
+# 开发工具（在 CPU/GPU 运行环境之后安装）
+pip install -r requirements-dev.txt
+
+# 可选：原生 Python 音频设备播放后端
+pip install -r requirements-audio-device.txt
 ```
+
+不要直接使用 `pip freeze > requirements.txt`。运行依赖应维护在
+`requirements-base.txt` 和 CPU/GPU 入口文件中；已验证的 Windows 精确版本
+记录在 `constraints-windows.txt`。
 
 ---
 
@@ -584,6 +594,9 @@ API_KEY = os.environ.get("AUDIO_API_KEY")
 ```
 
 **`.env` 文件用法**：
+
+以下是通用环境变量管理示例。当前 TABsucks 运行代码未使用
+`python-dotenv`，因此它不在项目 requirements 文件中。
 
 ```bash
 # .env 文件（不要提交到 Git！）
@@ -774,7 +787,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: '3.10'
       - run: pip install ruff black isort
       - run: ruff check .
       - run: black --check .
@@ -785,7 +798,8 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: '3.10'
+      - run: pip install -r requirements.txt
       - run: pip install -r requirements-dev.txt
       - run: pytest tests/ --cov=src
 ```
@@ -836,7 +850,6 @@ git push
 | `pytest` | `pip install pytest` | `pytest tests/ -v` |
 | `mypy` | `pip install mypy` | `mypy src/` |
 | `pre-commit` | `pip install pre-commit` | `pre-commit install` |
-| `python-dotenv` | `pip install python-dotenv` | `load_dotenv()` |
 | `gh` (GitHub CLI) | 见 GitHub 文档 | `gh pr create` |
 
 ---
@@ -1332,7 +1345,7 @@ if (position > SAMPLE_RATE) { ... }
 ```toml
 [tool.black]
 line-length = 100
-target-version = ["py311"]
+target-version = ["py310"]
 
 [tool.isort]
 profile = "black"
@@ -1344,7 +1357,7 @@ select = ["E", "F", "W", "I", "N", "UP", "B", "C4"]
 ignore = ["E501"]
 
 [tool.mypy]
-python_version = "3.11"
+python_version = "3.10"
 warn_return_any = true
 warn_unused_ignores = true
 ```
@@ -1443,7 +1456,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: "3.10"
       - run: pip install ruff black isort
       - run: ruff check .
       - run: black --check .
@@ -1455,7 +1468,8 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: "3.10"
+      - run: pip install -r requirements.txt
       - run: pip install -r requirements-dev.txt
       - run: pytest tests/ --cov=src
 

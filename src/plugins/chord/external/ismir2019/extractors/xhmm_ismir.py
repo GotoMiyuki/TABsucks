@@ -57,7 +57,7 @@ class XHMMDecoder():
                 assert(array[0]>=0)
                 result_names.append(name)
                 result_array.append(list(array))
-        result_array=np.array(result_array,dtype=np.int)
+        result_array=np.array(result_array,dtype=int)
         result_array[:,1]+=1 # bass adjust
         result_logprob=np.log(prob_triad[:,result_array[:,0]])
         bass_collect=result_array[:,1]>=0
@@ -95,7 +95,7 @@ class XHMMDecoder():
             if(is_in_range):
                 assert(array[0]>=0)
                 result_array.append(list(array))
-        result_array=np.array(result_array,dtype=np.int)
+        result_array=np.array(result_array,dtype=int)
         result_array[:,1]+=1 # bass adjust
         result_logprob=np.log(prob_triad[:,result_array[:,0]])
         bass_collect=result_array[:,1]>=0
@@ -109,8 +109,8 @@ class XHMMDecoder():
         n_chord=result_logprob.shape[1]
         dp=np.zeros_like(result_logprob)
         dp[0,1:]-=np.inf
-        dp_max_at=np.zeros((n_frame),dtype=np.int)
-        pre=np.zeros_like(result_logprob,dtype=np.int)
+        dp_max_at=np.zeros((n_frame),dtype=int)
+        pre=np.zeros_like(result_logprob,dtype=int)
         dp[0,:]+=result_logprob[0,:]
         dp_max_at[0]=np.argmax(dp[0,:])
         pre[0,:]=-1
@@ -139,8 +139,8 @@ class XHMMDecoder():
         n_chord=triad_logprob.shape[1]
         dp=np.zeros_like(triad_logprob)
         dp[0,1:]-=np.inf
-        dp_max_at=np.zeros((n_frame),dtype=np.int)
-        pre=np.zeros_like(triad_logprob,dtype=np.int)
+        dp_max_at=np.zeros((n_frame),dtype=int)
+        pre=np.zeros_like(triad_logprob,dtype=int)
         dp[0,:]+=triad_logprob[0,:]
         dp_max_at[0]=np.argmax(dp[0,:])
         pre[0,:]=-1
@@ -228,7 +228,7 @@ def prob_to_spectrogram(prob_list,ref_chords):
     indices=ref_chords[:,0]>0
     for arr in [result_7,result_9,result_11,result_13]:
         new_result=np.zeros((arr.shape[0],arr.shape[2]))
-        new_result[indices,:]=arr[np.arange(ref_chords.shape[0])[indices],(ref_chords[indices,0]-1).astype(np.int)%12,:]
+        new_result[indices,:]=arr[np.arange(ref_chords.shape[0])[indices],(ref_chords[indices,0]-1).astype(int)%12,:]
         new_results.append(new_result)
     return np.concatenate((result_triad,result_bass,new_results[0],new_results[1],new_results[2],new_results[3]),
                           axis=1)

@@ -268,9 +268,9 @@ def get_simple_joint_framed_downbeat_tempo_annotation(entry,proxy_name):
     delta_time=entry.prop.hop_length/entry.prop.sr
     beat=np.array(entry.dict[proxy_name].get(entry))
     beat_time=beat[:,0]
-    beat_pos=np.round(beat[:,1]).astype(np.int)
+    beat_pos=np.round(beat[:,1]).astype(int)
     beat_meters=np.zeros_like(beat_pos)
-    beat_frames=np.round(beat_time/delta_time).astype(np.int)
+    beat_frames=np.round(beat_time/delta_time).astype(int)
     beat_length=np.zeros_like(beat_pos)
     result=np.zeros((n_frame,3),dtype=np.float32)
     p_back=0

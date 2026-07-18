@@ -1,3 +1,6 @@
 [submodule "src/plugins/chord/external/ismir2019"]
 	path = src/plugins/chord/external/ismir2019
 	url = https://github.com/music-x-lab/ISMIR2019-Large-Vocabulary-Chord-Recognition.git
+[submodule "src/plugins/chord/external/chordmini"]
+	path = src/plugins/chord/external/chordmini
+	url = https://github.com/ptnghia-j/ChordMini.git

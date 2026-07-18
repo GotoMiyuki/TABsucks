@@ -14,6 +14,14 @@ def __getattr__(name: str):
         from src.kernel.core.resource_controller import ResourceController
 
         return ResourceController
+    if name == "PluginManager":
+        from src.kernel.core.plugin_manager import PluginManager
+
+        return PluginManager
+    if name in ("AnalysisEngine", "AnalysisResult"):
+        from src.kernel.core.analysis_engine import AnalysisEngine, AnalysisResult
+
+        return AnalysisEngine if name == "AnalysisEngine" else AnalysisResult
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
@@ -23,4 +31,7 @@ __all__ = [
     "MidiExporter",
     "export_to_midi",
     "ResourceController",
+    "PluginManager",
+    "AnalysisEngine",
+    "AnalysisResult",
 ]

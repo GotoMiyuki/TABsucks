@@ -1,19 +1,31 @@
-"""车间管理模块：一个车间 = 一段音频 + 四个 Tab 的状态。"""
+"""车间管理模块（**已废弃**）：一个车间 = 一段音频 + 四个 Tab 的状态。
+
+.. deprecated:: v0.2
+    本文件已被 :py:mod:`src.kernel.core.workshop` + :py:mod:`src.kernel.core.cache_system`
+    取代。新设计依据 ``docs/meetings/2026-6-16-meeting.md``，将"运行时表示
+    (MusicWorkshop)"与"持久化 (WorkshopState)"分离，并引入 cache 目录树。
+    本文件保留仅作向后兼容与参考，**新代码请勿引用**。
+
+迁移指南：
+
+* ``Workspace``             → :py:class:`~src.kernel.core.workshop.MusicWorkshop`
+* ``Workspace.name``        → :py:attr:`~src.kernel.core.workshop.MusicWorkshop.name`
+* ``track_states``          → :py:attr:`~src.kernel.core.workshop.WorkshopState.tab_state.tab4`
+* ``selected_analysis_track_id`` → 改由 Tab3 的 per-track analysis task 承载
+"""
 
 from __future__ import annotations
 
 import json
 import uuid
-import numpy as np
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-###########从separator导入分离结果和轨道枚举######################
-from src.plugins.separation.separator import SeparationResult, TrackId
+import numpy as np
 
 if TYPE_CHECKING:
-    from src.audio.loader import AudioData
+    from src.plugins.separation import SeparationResult
 
 
 @dataclass
@@ -41,7 +53,7 @@ class Workspace:
     # 分析结果缓存
     _beat_info: dict | None = field(default=None, repr=False)
     _chord_events: list | None = field(default=None, repr=False)
-    
+
     # 将原来的 dict 改写为具体的 SeparationResult 类型
     _separation_result: SeparationResult | None = field(default=None, repr=False)
 
@@ -102,7 +114,7 @@ class Workspace:
         with path.open("r", encoding="utf-8") as f:
             data = json.load(f)
         return cls.from_dict(data)
-    
+
     ##############轨道选择新添加##############
     selected_analysis_track_id: str | None = None
 
@@ -119,6 +131,7 @@ class Workspace:
             return None
         # 假设 _separation_result 是我们之前写的 SeparationResult 对象
         try:
+            from src.plugins.separation import TrackId
             track_enum = TrackId(self.selected_analysis_track_id)
             return self._separation_result.get_track(track_enum)
         except ValueError:

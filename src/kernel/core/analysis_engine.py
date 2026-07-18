@@ -1,174 +1,413 @@
-# 伪代码，位于 kernel/core/analysis_engine.py
-def run_analysis(self):
-    pm = self.plugin_manager
-    rc = self.resource_controller
+"""分析编排引擎，串联节奏→节拍→分离→和弦→调性→精炼 流水线。"""
 
-    # 1. 分离（假设已完成，stems已在缓冲区中）
-    # 2. 调用节奏基础插件（已完成）
-    # 3. 对钢琴和吉他分别进行和弦识别
-    chord_plugin_id = pm.get_plugin("chord_ismir2019")
-    for stem in ["piano", "guitar"]:
-        pm.execute_plugin(chord_plugin_id, stem_name=stem)
+from __future__ import annotations
 
-    # 4. 对贝斯进行根音检测
-    bass_plugin_id = pm.get_plugin("chord_bass_root")
-    pm.execute_plugin(bass_plugin_id)
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Any
 
-    # 5. 读取各插件结果，送入多级纠偏器 (Level-1/2)
-    piano_chords = rc.get_metadata("chord_raw_piano")
-    bass_root = rc.get_metadata("bass_root")
-    self.refiner.refine(piano_chords, bass_root, ...)
-"""
-可能要和上面的合并
-"""
-def analyze(self):
-    # ... 已完成分离和基础节奏 ...
-    
-    # 调用和弦插件
-    chord_plugin_id = self.plugin_manager.get_plugin_id("chord_ismir2019")
-    for stem in ["piano", "guitar"]:
-        result = self.plugin_manager.execute_plugin(
-            chord_plugin_id, 
-            stem_name=stem
+from src.analysis.beat import BeatInfo, BeatTracker, normalize_time_signature
+from src.analysis.chord import ChordAnalyzer, ChordEvent
+from src.analysis.key import KeyAnalysis, analyze_key
+from src.analysis.refiner import refine
+from src.analysis.rhythm import RhythmAnalyzer, RhythmInfo
+from src.kernel.core.plugin_manager import PluginManager, PluginManagerError
+from src.kernel.core.resource_controller import ResourceController
+
+if TYPE_CHECKING:
+    from src.plugins.separation.separator_old_type import SeparationResult
+
+
+@dataclass
+class AnalysisResult:
+    """一次完整分析的结果汇总。"""
+
+    rhythm: RhythmInfo | None = None
+    beat_info: BeatInfo | None = None
+    chord_events: dict[str, list[ChordEvent]] = field(default_factory=dict)
+    bass_progression: list[ChordEvent] = field(default_factory=list)
+    key_analysis: KeyAnalysis | None = None
+    unified_chords: list[ChordEvent] = field(default_factory=list)
+    separation_result: SeparationResult | None = None
+
+    @property
+    def bass_root(self) -> str:
+        """从 bass_progression 推导全局根音（向后兼容）。"""
+        if not self.bass_progression:
+            return "N"
+        roots = [e.root for e in self.bass_progression if e.root not in ("N", "X")]
+        if not roots:
+            return "N"
+        return max(set(roots), key=roots.count)
+
+
+class AnalysisEngineError(Exception):
+    """分析引擎错误。"""
+
+    pass
+
+
+class AnalysisEngine:
+    """分析编排引擎，支持两种模式：
+
+    - **自动模式** ``run()`` — 一次跑完全流水线（基础节奏→BeatGrid→分离→…→Refiner）
+    - **单步模式** ``run_single()`` — 对单条音轨执行单个分析插件，供 Tab3 逐轨调用
+
+    自动模式使用方式::
+
+        engine = AnalysisEngine(rc, pm)
+        result = engine.run()
+
+    单步模式使用方式::
+
+        engine = AnalysisEngine(rc, pm)
+        chord_events = engine.run_single("piano", "chord_chordnet_2e1d")
+    """
+
+    # 和弦识别默认在这些 stem 上执行
+    CHORD_STEMS = ["piano", "guitar"]
+
+    def __init__(self, rc: ResourceController, pm: PluginManager) -> None:
+        self._rc = rc
+        self._pm = pm
+        self._rhythm_analyzer = RhythmAnalyzer()
+        self._chord_analyzer = ChordAnalyzer()
+        self._result: AnalysisResult | None = None
+
+    @property
+    def result(self) -> AnalysisResult | None:
+        """最近一次 run() 的结果。"""
+        return self._result
+
+    def run(self, progress_callback=None) -> AnalysisResult:
+        """执行完整分析流水线。
+
+        Args:
+            progress_callback: 可选回调 ``(step: str, progress: float)``
+                用于报告进度。
+
+        Returns:
+            AnalysisResult 实例。
+        """
+        self._check_prerequisites()
+        result = AnalysisResult()
+
+        # 1. 节奏分析（前置侦察兵，基于原始混音的粗略 BPM/拍号）
+        self._report(progress_callback, "rhythm", 0.0)
+        result.rhythm = self._run_rhythm()
+        self._report(progress_callback, "rhythm", 1.0)
+
+        # 2. 节拍网格生成（从 BPM 数学推算逐拍时间戳）
+        self._report(progress_callback, "beat_grid", 0.0)
+        self._result = result  # 暂存以便 _generate_beat_grid 访问 rhythm
+        result.beat_info = self._generate_beat_grid(result.rhythm)
+        self._report(progress_callback, "beat_grid", 1.0)
+
+        # 3. 音轨分离
+        self._report(progress_callback, "separation", 0.0)
+        result.separation_result = self._run_separation()
+        self._report(progress_callback, "separation", 1.0)
+
+        # 4. 深度节奏分析（对分离后的鼓声轨等做精细节奏识别）
+        if result.rhythm and result.rhythm.needs_deep_analysis:
+            self._report(progress_callback, "deep_rhythm", 0.0)
+            self._try_deep_rhythm()
+            self._report(progress_callback, "deep_rhythm", 1.0)
+
+        # 5. 低音进行检测
+        self._report(progress_callback, "bass_progression", 0.0)
+        result.bass_progression = self._run_bass_progression()
+        self._report(progress_callback, "bass_progression", 1.0)
+
+        # 6. 和弦识别（对每个目标 stem 执行）
+        self._report(progress_callback, "chord", 0.0)
+        chord_stems = self._get_available_chord_stems()
+        for i, stem in enumerate(chord_stems):
+            result.chord_events[stem] = self._run_chord(stem)
+            self._report(
+                progress_callback, "chord", (i + 1) / max(len(chord_stems), 1)
+            )
+
+        # 7. 调性分析
+        self._report(progress_callback, "key_analysis", 0.0)
+        result.key_analysis = self._run_key_analysis(result.bass_progression)
+        self._report(progress_callback, "key_analysis", 1.0)
+
+        # 8. 精炼（节拍对齐 → 多轨合并 → 转位标记）
+        self._report(progress_callback, "refine", 0.0)
+        beat_timestamps = self._rc.get_metadata("beat_timestamps") or []
+        result.unified_chords = self._run_refine(
+            result.chord_events, beat_timestamps, result.bass_progression
         )
-        print(f"Chord on {stem}: {result['data']}")
-    
-    # 然后将多轨结果送入 refiner
-    piano_chords = self.rc.get_metadata("chord_raw_piano")
-    guitar_chords = self.rc.get_metadata("chord_raw_guitar")
-    rhythm_data = self.rc.get_metadata("rhythm_foundation_data")
-    refined = self.refiner.refine_chord_sequence(piano_chords, rhythm_data)
+        self._report(progress_callback, "refine", 1.0)
 
-"""
-和弦后处理/纠偏模块 (Level-1)
-利用基础节奏结果对原始和弦预测进行节拍对齐和起音约束。
-"""
-import numpy as np
-import librosa
-from typing import List, Tuple, Dict, Any
+        # 9. 存储到 RC
+        self._rc.set_metadata("analysis_result", result)
+        self._result = result
+        return result
 
-def frames_to_time(frame_indices: np.ndarray, hop_length: int, sr: int) -> np.ndarray:
-    """将帧索引转换为时间(秒)"""
-    return librosa.frames_to_time(frame_indices, sr=sr, hop_length=hop_length)
+    def run_single(
+        self,
+        track_id: str,
+        plugin_name: str,
+        progress_callback=None,
+    ) -> Any:
+        """单步模式：对指定音轨执行单个分析插件。
 
+        供 Tab3 逐轨独立调用。根据插件名称自动判断类型并归一化结果，
+        同时将结果累积写入 ``self._result``。
 
-def beat_sync_chroma(chroma: np.ndarray, 
-                     bpm: float,
-                     sr: int = 22050,
-                     hop_length: int = 512,
-                     beats_per_aggregation: int = 1) -> np.ndarray:
-    """
-    将帧级色度向量聚合为节拍同步色度。
-    
-    Args:
-        chroma: shape (n_frames, 12)
-        bpm: 全局 BPM
-        sr: 采样率
-        hop_length: 色度提取时的 hop 长度
-        beats_per_aggregation: 每多少拍聚合一次 (1=每拍, 2=每两拍)
-    Returns:
-        beat_chroma: shape (n_beats, 12)
-    """
-    n_frames = chroma.shape[0]
-    frame_times = frames_to_time(np.arange(n_frames), hop_length, sr)
-    
-    # 每拍的秒数
-    beat_duration = 60.0 / bpm
-    agg_duration = beat_duration * beats_per_aggregation
-    
-    # 将帧分配到对应的"节拍组"
-    beat_groups = (frame_times // agg_duration).astype(int)
-    n_beats = int(np.ceil(np.max(frame_times) / agg_duration))
-    
-    beat_chroma = np.zeros((n_beats, chroma.shape[1]))
-    for beat_idx in range(n_beats):
-        mask = beat_groups == beat_idx
-        if np.any(mask):
-            beat_chroma[beat_idx] = np.median(chroma[mask], axis=0)
-    
-    return beat_chroma
+        Args:
+            track_id: 目标音轨名称（如 ``"piano"``, ``"drums"``）。
+            plugin_name: 插件名称（如 ``"chord_chordnet_2e1d"``）。
+            progress_callback: 可选回调 ``(step: str, progress: float)``。
 
+        Returns:
+            归一化后的分析结果（和弦类返回 ``list[ChordEvent]`` 等）。
 
-def onset_constrained_transition(
-    chord_indices: np.ndarray,
-    onset_envelope: np.ndarray,
-    hop_length: int,
-    sr: int,
-    onset_threshold: float = 0.1,
-    alpha: float = 5.0
-) -> np.ndarray:
-    """
-    利用起音包络约束和弦解码中的转移代价。
-    
-    当 onset_envelope[t] 很小时，惩罚标签变化。
-    这模拟了文中的公式：
-        new_cost = original_cost - alpha * onset_envelope[t]
-    
-    Args:
-        chord_indices: 原始模型输出的最佳标签序列，shape (n_frames,)
-        onset_envelope: 包络强度，shape (n_frames,)
-        hop_length: 特征提取的 hop 长度
-        sr: 采样率
-        onset_threshold: 低于此值的帧会被惩罚
-        alpha: 惩罚系数
-    Returns:
-        smoothed_indices: 平滑后的标签序列
-    """
-    if len(chord_indices) != len(onset_envelope):
-        # 如果长度不一致，重新采样包络
-        from scipy.interpolate import interp1d
-        original_times = np.linspace(0, len(onset_envelope)/100, len(onset_envelope))  # onset 以 100 fps 运行
-        target_times = librosa.frames_to_time(np.arange(len(chord_indices)), sr=sr, hop_length=hop_length)
-        interp_func = interp1d(original_times, onset_envelope, kind='linear', 
-                              bounds_error=False, fill_value=0.0)
-        onset_envelope = interp_func(target_times)
-    
-    smoothed = np.copy(chord_indices)
-    for t in range(1, len(chord_indices)):
-        if onset_envelope[t] < onset_threshold:
-            # 如果起音很弱，保持前一帧的标签
-            smoothed[t] = smoothed[t-1]
-    
-    return smoothed
+        Raises:
+            PluginManagerError: 插件不存在。
+        """
+        self._report(progress_callback, f"{plugin_name}:{track_id}", 0.0)
 
-def refine_chord_sequence(
-    raw_chords: Dict[str, Any],  # {"labels": [...], "frame_times": [...]}
-    rhythm_data: Dict[str, Any],  # FoundationRhythmResult 的数据部分
-    sr: int = 22050,
-    hop_length: int = 512
-) -> Dict[str, Any]:
-    """
-    Level-1 纠偏主函数，由 AnalysisEngine 调用。
-    
-    Args:
-        raw_chords: 和弦模型原始输出，必须包含 "labels" (每帧标签) 和 "frame_times" (时间)
-        rhythm_data: FoundationRhythmPlugin 返回的 data 字典
-        sr: 音频采样率
-        hop_length: 和弦特征提取的 hop 长度
-    Returns:
-        与 raw_chords 结构相同的精炼结果
-    """
-    labels = np.array(raw_chords["labels"])
-    global_bpm = rhythm_data.get("global_bpm", 120.0)
-    onset_env = np.array(rhythm_data.get("onset_envelope", []))
-    
-    # 步骤1：节拍同步聚合（如果需要每拍一个和弦）
-    # 这里假设原始 labels 是帧级的，我们先转为节拍级
-    # 注意：这需要原始模型也输出置信度矩阵，此处简化处理
-    # 实际使用时可能需要保留帧级结果，只做平滑
-    # beat_labels = beat_sync_labels(...)  # 具体实现取决于你的模型输出格式
-    
-    # 步骤2：起音约束平滑
-    if len(onset_env) > 0:
-        smoothed_labels = onset_constrained_transition(
-            labels, onset_env, hop_length, sr
+        plugin = self._pm.ensure_plugin(plugin_name)
+        if plugin is None:
+            raise PluginManagerError(f"插件不存在: {plugin_name}")
+
+        raw_result = self._pm.execute(plugin_name, stem_name=track_id)
+
+        normalized = self._normalize_result(plugin_name, raw_result)
+
+        # 累积到 AnalysisResult
+        if self._result is None:
+            self._result = AnalysisResult()
+        self._accumulate(plugin_name, track_id, normalized)
+
+        self._report(progress_callback, f"{plugin_name}:{track_id}", 1.0)
+        return normalized
+
+    # ------------------------------------------------------------------
+    # 流水线各阶段
+    # ------------------------------------------------------------------
+
+    def _run_rhythm(self) -> RhythmInfo:
+        """调用节奏插件并归一化结果。"""
+        try:
+            plugin = self._pm.ensure_plugin("rhythm_foundation")
+        except PluginManagerError:
+            return RhythmInfo()
+
+        if plugin is None:
+            return RhythmInfo()
+
+        raw_result = self._pm.execute("rhythm_foundation")
+        return self._rhythm_analyzer.analyze(raw_result)
+
+    def _generate_beat_grid(self, rhythm_info: RhythmInfo | None) -> BeatInfo:
+        """从 RhythmInfo 的 BPM 纯数学推算逐拍时间戳。
+
+        Args:
+            rhythm_info: 节奏分析结果。
+
+        Returns:
+            BeatInfo 实例，包含拍点事件列表。
+        """
+        if rhythm_info is None or rhythm_info.global_bpm is None or rhythm_info.global_bpm <= 0:
+            self._rc.set_metadata("beat_timestamps", [])
+            return BeatInfo()
+
+        beat_duration = rhythm_info.beat_duration
+        raw_audio = self._rc.get_buffer("raw")
+        sr = self._rc.get_metadata("sample_rate") or 44100
+        audio_duration = len(raw_audio) / sr
+
+        # 从 t=0 到音频结束生成拍点
+        beat_timestamps: list[float] = []
+        t = 0.0
+        while t < audio_duration:
+            beat_timestamps.append(round(t, 6))
+            t += beat_duration
+
+        # 写入 RC 供下游插件使用
+        self._rc.set_metadata("beat_timestamps", beat_timestamps)
+
+        # 用 BeatTracker 构建 BeatInfo
+        time_sig = (4, 4)
+        if rhythm_info.time_signature:
+            try:
+                time_sig = normalize_time_signature(rhythm_info.time_signature)
+            except Exception:
+                pass
+
+        tracker = BeatTracker(bpm=rhythm_info.global_bpm, time_signature=time_sig)
+        return tracker.track(beat_timestamps)
+
+    def _try_deep_rhythm(self) -> None:
+        """尝试调用 deep_rhythm 插件（Phase C）。
+
+        在分离之后执行，可访问鼓声轨等单独乐器数据。
+        不存在时静默跳过。
+        """
+        # TODO: 等 deep_rhythm 插件实现后取消注释
+        # deep_plugin = self._pm.get("rhythm_deep")
+        # if deep_plugin is not None:
+        #     deep_plugin.execute(self._rc)
+        pass
+
+    def _run_separation(self) -> object:
+        """执行音轨分离并将结果写入 RC buffer。"""
+        plugin_name = "separation_bs_roformer"
+
+        try:
+            plugin = self._pm.ensure_plugin(plugin_name)
+        except PluginManagerError:
+            plugin = None
+
+        if plugin is not None:
+            if self._pm.get_manifest(plugin_name) is not None:
+                vram = self._pm.prepare_vram(plugin_name)
+                if not vram.get("ready", False):
+                    raise AnalysisEngineError(vram.get("message", "VRAM is not ready"))
+            try:
+                result = self._pm.execute(plugin_name)
+                self._rc.set_metadata("separation_plugin_result", result)
+                return result
+            finally:
+                if self._pm.get_manifest(plugin_name) is not None:
+                    self._rc.release_vram(plugin_name)
+
+        from src.audio.loader import AudioData
+        from src.plugins.separation.separator_old_type import Separator, TrackId
+
+        raw_audio = self._rc.get_buffer("raw")
+        sr = self._rc.get_metadata("sample_rate") or 44100
+        duration = len(raw_audio) / sr
+
+        separator = Separator()
+        audio_data = AudioData(samples=raw_audio, sample_rate=sr, duration=duration)
+        result = separator.separate(audio_data)
+
+        # 桥接：将分离结果写入 RC buffer，供后续插件使用
+        for track_id in TrackId:
+            self._rc.set_buffer(track_id.value, result.get_track(track_id))
+        self._rc.set_metadata("separation_result", result)
+        self._rc.set_metadata("sample_rate", result.sample_rate)
+
+        return result
+
+    def _run_chord(self, stem: str) -> list[ChordEvent]:
+        """对指定 stem 执行和弦识别并归一化。"""
+        chord_plugin_names = [
+            "chord_chordnet_2e1d",
+            "chord_btc_sl",
+            "chord_ismir2019",
+        ]
+
+        raw_result = None
+        for plugin_name in chord_plugin_names:
+            try:
+                plugin = self._pm.ensure_plugin(plugin_name)
+            except PluginManagerError:
+                continue
+            if plugin is not None:
+                raw_result = self._pm.execute(plugin_name, stem_name=stem)
+                break
+
+        if raw_result is None:
+            return []
+
+        # 兼容两种返回格式：{"data": [...]} 或直接 [...]
+        chord_dicts = (
+            raw_result.get("data", raw_result) if isinstance(raw_result, dict) else raw_result
         )
-    else:
-        smoothed_labels = labels
-    
-    return {
-        "labels": smoothed_labels.tolist(),
-        "frame_times": raw_chords["frame_times"],
-        "smoothed": True,
-        "method": "onset_constrained"
-    }
+        return self._chord_analyzer.analyze(chord_dicts)
+
+    def _run_bass_progression(self) -> list[ChordEvent]:
+        """调用 bass_root 插件获取低音进行序列。"""
+        try:
+            plugin = self._pm.ensure_plugin("chord_bass_root")
+        except PluginManagerError:
+            return []
+
+        if plugin is None:
+            return []
+
+        raw_result = self._pm.execute("chord_bass_root")
+        progression_dicts = raw_result.get("bass_progression", [])
+        if progression_dicts:
+            return [ChordEvent(**d) for d in progression_dicts]
+        return []
+
+    def _run_key_analysis(self, bass_progression: list[ChordEvent]) -> KeyAnalysis | None:
+        """从 bass progression 推断调性。"""
+        if not bass_progression:
+            return None
+        return analyze_key(bass_progression)
+
+    def _run_refine(
+        self,
+        chord_events: dict[str, list[ChordEvent]],
+        beat_timestamps: list[float],
+        bass_progression: list[ChordEvent],
+    ) -> list[ChordEvent]:
+        """执行精炼流水线：节拍对齐 → 多轨合并 → 转位标记。"""
+        if not chord_events or not beat_timestamps:
+            return []
+        return refine(chord_events, beat_timestamps, bass_progression)
+
+    # ------------------------------------------------------------------
+    # 辅助方法
+    # ------------------------------------------------------------------
+
+    def _check_prerequisites(self) -> None:
+        """检查 RC 中是否有必要的前置数据。"""
+        if self._rc.get_metadata("sample_rate") is None:
+            try:
+                self._rc.get_buffer("raw")
+            except Exception:
+                raise AnalysisEngineError(
+                    "RC 中缺少 'raw' buffer，请先加载音频数据。"
+                )
+
+    def _get_available_chord_stems(self) -> list[str]:
+        """返回已有 buffer 的和弦分析目标 stem 列表。"""
+        available = []
+        for stem in self.CHORD_STEMS:
+            try:
+                self._rc.get_buffer(stem)
+                available.append(stem)
+            except Exception:
+                pass
+        return available
+
+    @staticmethod
+    def _report(callback, step: str, progress: float) -> None:
+        if callback is not None:
+            callback(step, progress)
+
+    def _normalize_result(self, plugin_name: str, raw_result: Any) -> Any:
+        """根据插件类型归一化原始结果（复用 run() 中的解析逻辑）。"""
+        if plugin_name.startswith("chord_") and plugin_name != "chord_bass_root":
+            chord_dicts = (
+                raw_result.get("data", raw_result)
+                if isinstance(raw_result, dict)
+                else raw_result
+            )
+            return self._chord_analyzer.analyze(chord_dicts)
+
+        if plugin_name == "chord_bass_root":
+            progression_dicts = raw_result.get("bass_progression", [])
+            if progression_dicts:
+                return [ChordEvent(**d) for d in progression_dicts]
+            return []
+
+        # 默认：原样返回
+        return raw_result
+
+    def _accumulate(self, plugin_name: str, track_id: str, normalized: Any) -> None:
+        """将 run_single 的结果累积到 self._result。"""
+        assert self._result is not None
+
+        if plugin_name.startswith("chord_") and plugin_name != "chord_bass_root":
+            self._result.chord_events[track_id] = normalized
+        elif plugin_name == "chord_bass_root":
+            self._result.bass_progression = normalized
