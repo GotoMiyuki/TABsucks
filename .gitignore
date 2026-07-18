@@ -9,6 +9,7 @@ venv/
 *.egg-info/
 dist/
 build/
+.build/
 *.egg
 
 # 测试

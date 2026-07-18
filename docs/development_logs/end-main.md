@@ -81,3 +81,13 @@
 - 当前便携目录约 7.27 GB，主要来自机器学习运行时依赖。
 - PyInstaller 会报告部分可选 TensorRT/cuDNN DLL 缺失；这些不是当前默认功能的必需项。
 - 后续公开发行前应评估拆分 CPU/GPU 安装包，以明显降低下载和安装体积。
+
+## 2026-07-18：Windows 拆分发行
+
+- 将 Windows 发行版拆分为 CPU 基础包、模型资源包和 GPU/CUDA 升级包。
+- CPU 基础包仅包含程序本体、CPU 推理运行时、FFmpeg 和基础功能，默认分离设备改为 CPU。
+- 模型资源从基础包和 GPU 包中移除，统一由独立模型安装包提供。
+- GPU 升级包覆盖完整 GPU 运行环境和主程序，避免仅替换部分 Torch/CUDA 文件导致启动异常。
+- GPU 升级包使用 Inno Setup 分片，确保每个 GitHub Release 资产小于 2 GiB。
+- 新增打包运行时验证脚本，检查 PyTorch 版本、CUDA 可用性和 ONNX Runtime Provider。
+- 安装顺序固定为：基础包、可选 GPU 升级包、模型资源包。

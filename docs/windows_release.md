@@ -142,3 +142,46 @@ dist\installer\TABsucks-Setup.exe
 
 当前依赖包含 `onnxruntime-gpu`。正式公开发布前，建议分别验证 NVIDIA GPU
 机器与纯 CPU 机器，并决定是否拆分 CPU/GPU 安装包。
+
+## 拆分发行包
+
+GitHub Release 采用三个逻辑组件，避免单个资产超过 2 GiB：
+
+```text
+TABsucks-Base-Setup.exe
+TABsucks-GPU-Upgrade-Setup.exe
+TABsucks-GPU-Upgrade-Setup-1.bin
+TABsucks-GPU-Upgrade-Setup-2.bin
+TABsucks-Models-Setup.exe
+SHA256SUMS.txt
+```
+
+- 基础包包含程序本体、CPU 推理运行时、FFmpeg 和基础功能。
+- GPU 升级包包含 CUDA 版 PyTorch、ONNX Runtime GPU Provider 及其运行依赖；分片 EXE 和 BIN 文件必须放在同一目录。
+- 模型包包含 BS-RoFormer、ChordMini 和其他独立模型资源。
+- GPU 升级包会替换基础包的运行环境，因此不会重复携带模型。
+
+安装顺序：
+
+```text
+1. TABsucks-Base-Setup.exe
+2. TABsucks-GPU-Upgrade-Setup.exe（仅 NVIDIA GPU 用户，可选）
+3. TABsucks-Models-Setup.exe（需要模型功能时安装）
+```
+
+生成拆分发行包：
+
+```powershell
+.\scripts\build_split_release.ps1 `
+  -CpuPython .\.build\cpu-venv\Scripts\python.exe
+```
+
+若 CPU 便携目录已经生成，可仅重新编译安装包：
+
+```powershell
+.\scripts\build_split_release.ps1 `
+  -CpuPython .\.build\cpu-venv\Scripts\python.exe `
+  -SkipCpuBuild
+```
+
+发布前必须确认每个文件小于 2 GiB，并使用 `SHA256SUMS.txt` 校验下载完整性。

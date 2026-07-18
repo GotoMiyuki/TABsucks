@@ -1,6 +1,7 @@
 # ruff: noqa: F821, I001, UP009
 # -*- mode: python ; coding: utf-8 -*-
 
+import os
 from pathlib import Path
 
 from PyInstaller.utils.hooks import collect_data_files, collect_submodules
@@ -8,6 +9,8 @@ from PyInstaller.utils.hooks import collect_data_files, collect_submodules
 
 project_root = Path(SPECPATH).resolve().parent
 datas = []
+include_models = os.environ.get("TABSUCKS_INCLUDE_MODELS", "1") != "0"
+distribution_name = os.environ.get("TABSUCKS_DIST_NAME", "TABsucks")
 
 
 def add_tree(relative_path, destination=None):
@@ -29,11 +32,13 @@ add_tree("src/plugins/chord/manifest.json")
 add_tree("src/plugins/rhythm/manifest.json")
 add_tree("src/plugins/chord/external/ismir2019")
 add_tree("src/plugins/chord/external/chordmini/config")
-add_tree("src/plugins/chord/external/chordmini/checkpoints")
 add_tree("src/plugins/chord/external/chordmini/src")
-add_tree("pretrained")
-add_tree("models")
 add_tree("packaging/ffmpeg", "ffmpeg")
+
+if include_models:
+    add_tree("src/plugins/chord/external/chordmini/checkpoints")
+    add_tree("pretrained")
+    add_tree("models")
 
 hiddenimports = [
     "src.plugins._example_separator",
@@ -94,6 +99,6 @@ coll = COLLECT(
     strip=False,
     upx=True,
     upx_exclude=[],
-    name="TABsucks",
+    name=distribution_name,
     contents_directory=".",
 )
