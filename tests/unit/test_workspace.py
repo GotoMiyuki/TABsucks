@@ -2,12 +2,9 @@
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
-import pytest
-
-from src.core.workspace import (
+from src.kernel.core.workspace import (
     TrackState,
     Workspace,
     WorkspaceManager,
@@ -102,7 +99,7 @@ class TestWorkspaceManager:
         """switch_to 切换到已存在的车间。"""
         mgr = WorkspaceManager()
         ws1 = mgr.create("Workspace 1")
-        ws2 = mgr.create("Workspace 2")
+        mgr.create("Workspace 2")
         assert mgr.switch_to(ws1.id) is True
         assert mgr.get_active() == ws1
 

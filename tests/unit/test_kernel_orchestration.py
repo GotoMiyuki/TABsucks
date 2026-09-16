@@ -33,6 +33,19 @@ class TestOrchestratorInit:
         assert any(s["name"] == "example_separator" for s in seps)
         assert any(a["name"] == "example_analyzer" for a in ans)
 
+    def test_workshop_contexts_isolate_buffers(self) -> None:
+        orch = Orchestrator()
+        first = orch.get_context("workshop-a")
+        second = orch.get_context("workshop-b")
+
+        first.rc.set_buffer("vocals", np.array([1.0], dtype=np.float32))
+        second.rc.set_buffer("vocals", np.array([2.0], dtype=np.float32))
+
+        assert first.rc is not second.rc
+        assert first.pm is not second.pm
+        assert first.rc.get_buffer("vocals").tolist() == [1.0]
+        assert second.rc.get_buffer("vocals").tolist() == [2.0]
+
 
 class TestProgressCallback:
     def test_callback_emits_to_bus(self) -> None:
@@ -61,6 +74,64 @@ class TestProgressCallback:
 
 
 class TestStartSeparation:
+    def test_gpu_plugins_are_serialized_across_workshops(self, monkeypatch) -> None:
+        active = 0
+        max_active = 0
+
+        class GpuPlugin:
+            name = "serialized_gpu_separator"
+
+            async def run_async(self, rc, **kwargs):
+                nonlocal active, max_active
+                active += 1
+                max_active = max(max_active, active)
+                await asyncio.sleep(0.05)
+                active -= 1
+                return {"status": "success", "data": {"stems": []}}
+
+        bus = EventBus()
+        orch = Orchestrator()
+        contexts = [orch.get_context("gpu-a"), orch.get_context("gpu-b")]
+        for context in contexts:
+            context.pm.register(GpuPlugin())
+            context.pm._manifests[GpuPlugin.name] = {
+                "name": GpuPlugin.name,
+                "supported_devices": ["gpu"],
+                "requirements": {"gpu_memory_mb": 1},
+            }
+            monkeypatch.setattr(
+                context.rc,
+                "get_gpu_info",
+                lambda: {"cuda_available": True},
+            )
+            monkeypatch.setattr(
+                context.pm,
+                "prepare_vram",
+                lambda name: {"ready": True},
+            )
+
+        async def runner():
+            await asyncio.gather(
+                orch.start_separation(
+                    "gpu-a",
+                    bus,
+                    plugin_name=GpuPlugin.name,
+                    compute_device="gpu",
+                    durations_sec=0.0,
+                ),
+                orch.start_separation(
+                    "gpu-b",
+                    bus,
+                    plugin_name=GpuPlugin.name,
+                    compute_device="gpu",
+                    durations_sec=0.0,
+                ),
+            )
+
+        asyncio.run(runner())
+
+        assert max_active == 1
+
     def test_gpu_request_falls_back_to_cpu_for_cpu_only_plugin(self) -> None:
         class CpuOnlyPlugin:
             name = "cpu_only_separator"

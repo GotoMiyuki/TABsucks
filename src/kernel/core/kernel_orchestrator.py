@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import threading
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Any
 
 from src.kernel.core.analysis_engine import AnalysisEngine
@@ -12,6 +14,19 @@ from src.kernel.core.plugin_manager import PluginManager, PluginManagerError
 from src.kernel.core.resource_controller import ResourceController
 
 logger = logging.getLogger(__name__)
+
+# The desktop process owns one asyncio loop for plugin work, so a module-level
+# permit is the process-wide GPU execution boundary shared by all orchestrators.
+_GPU_SEMAPHORE = asyncio.Semaphore(1)
+
+
+@dataclass
+class ExecutionContext:
+    """Runtime resources owned by one workshop."""
+
+    rc: ResourceController
+    pm: PluginManager
+    ae: AnalysisEngine
 
 
 def make_progress_callback(
@@ -135,13 +150,33 @@ class Orchestrator:
         pm: PluginManager | None = None,
         register_examples: bool = True,
     ) -> None:
-        self.rc: ResourceController = rc or ResourceController()
-        self.pm: PluginManager = pm or PluginManager(self.rc)
+        self._register_examples = register_examples
+        initial_rc = rc or ResourceController()
+        initial_pm = pm or PluginManager(initial_rc)
         if register_examples:
-            self._register_default_plugins()
-        self.ae: AnalysisEngine = AnalysisEngine(self.rc, self.pm)
+            self._register_default_plugins(initial_pm)
 
-    def _register_default_plugins(self) -> None:
+        self._default_context = ExecutionContext(
+            rc=initial_rc,
+            pm=initial_pm,
+            ae=AnalysisEngine(initial_rc, initial_pm),
+        )
+        # Backward-compatible aliases for direct Orchestrator users. The first
+        # workshop binds to this context.
+        self.rc = self._default_context.rc
+        self.pm = self._default_context.pm
+        self.ae = self._default_context.ae
+
+        self._contexts: dict[str, ExecutionContext] = {}
+        self._workshop_locks: dict[str, asyncio.Lock] = {}
+        self._default_context_owner: str | None = None
+        self._context_lock = threading.RLock()
+
+        # One process-level permit prevents concurrent plugins from overcommitting
+        # GPU memory. CPU-only work remains concurrent across workshops.
+        self._gpu_semaphore = _GPU_SEMAPHORE
+
+    def _register_default_plugins(self, pm: PluginManager) -> None:
         """Register MVP example plugins explicitly."""
         import importlib
 
@@ -150,21 +185,81 @@ class Orchestrator:
             try:
                 mod = importlib.import_module(module_path)
                 cls = getattr(mod, class_name)
-                self.pm.register(cls())
+                pm.register(cls())
                 logger.info("Registered plugin: %s", class_name)
             except Exception as e:  # noqa: BLE001
                 logger.warning("Failed to register %s: %s", path, e)
 
-    def _resolve_separator_name(self, plugin_name: str) -> str:
+    def _build_context(self) -> ExecutionContext:
+        rc = ResourceController()
+        pm = PluginManager(rc)
+        if self._register_examples:
+            self._register_default_plugins(pm)
+        return ExecutionContext(rc=rc, pm=pm, ae=AnalysisEngine(rc, pm))
+
+    def get_context(self, workshop_id: str) -> ExecutionContext:
+        """Return the isolated execution context for one workshop."""
+        with self._context_lock:
+            context = self._contexts.get(workshop_id)
+            if context is not None:
+                return context
+
+            if self._default_context_owner is None:
+                context = self._default_context
+                self._default_context_owner = workshop_id
+            else:
+                context = self._build_context()
+            self._contexts[workshop_id] = context
+            self._workshop_locks[workshop_id] = asyncio.Lock()
+            return context
+
+    def release_context(self, workshop_id: str) -> None:
+        """Release all in-memory resources associated with one workshop."""
+        with self._context_lock:
+            context = self._contexts.pop(workshop_id, None)
+            self._workshop_locks.pop(workshop_id, None)
+            if context is None:
+                return
+
+            context.rc.clear()
+            if self._default_context_owner == workshop_id:
+                self._default_context = self._build_context()
+                self._default_context_owner = None
+                self.rc = self._default_context.rc
+                self.pm = self._default_context.pm
+                self.ae = self._default_context.ae
+
+    def shutdown(self) -> None:
+        """Release every workshop execution context."""
+        with self._context_lock:
+            contexts = {id(ctx): ctx for ctx in self._contexts.values()}
+            contexts[id(self._default_context)] = self._default_context
+            for context in contexts.values():
+                context.rc.clear()
+            self._contexts.clear()
+            self._workshop_locks.clear()
+            self._default_context_owner = None
+
+    def _resolve_separator_name(
+        self,
+        plugin_name: str,
+        pm: PluginManager | None = None,
+    ) -> str:
         """Accept old UI model labels while moving toward plugin ids."""
-        if self.pm.get(plugin_name) is not None or self.pm.get_manifest(plugin_name) is not None:
+        manager = pm or self.pm
+        if manager.get(plugin_name) is not None or manager.get_manifest(plugin_name) is not None:
             return plugin_name
         return self.SEPARATOR_ALIASES.get(plugin_name, plugin_name)
 
-    def _ensure_plugin(self, plugin_name: str, config: dict[str, Any] | None = None):
+    def _ensure_plugin(
+        self,
+        plugin_name: str,
+        pm: PluginManager,
+        config: dict[str, Any] | None = None,
+    ):
         """Return a registered plugin or lazily instantiate a manifest plugin."""
         try:
-            return self.pm.ensure_plugin(plugin_name, config=config)
+            return pm.ensure_plugin(plugin_name, config=config)
         except PluginManagerError:
             raise
         except Exception as e:  # noqa: BLE001
@@ -185,113 +280,148 @@ class Orchestrator:
         """Start a separation plugin task and emit lifecycle/progress events."""
         import numpy as np
 
-        if audio_samples is not None:
-            arr = np.asarray(audio_samples, dtype=np.float32)
-            self.rc.set_buffer("raw", arr)
-            self.rc.set_metadata("sample_rate", int(sample_rate))
+        context = self.get_context(wid)
+        workshop_lock = self._workshop_locks[wid]
+        input_samples = (
+            np.asarray(audio_samples, dtype=np.float32)
+            if audio_samples is not None
+            else None
+        )
 
         async def _run() -> dict[str, Any]:
-            resolved_plugin = self._resolve_separator_name(plugin_name)
-            requested_device = _normalise_compute_device(compute_device)
-            try:
-                plugin = self._ensure_plugin(resolved_plugin)
-                if plugin is None:
-                    raise PluginManagerError(f"plugin not found: {resolved_plugin}")
-                effective_device = self._resolve_separation_device(
-                    resolved_plugin,
-                    requested_device,
-                )
-            except PluginManagerError as error:
+            async with workshop_lock:
+                if input_samples is not None:
+                    context.rc.set_buffer("raw", input_samples)
+                    context.rc.set_metadata("sample_rate", int(sample_rate))
+
+                resolved_plugin = self._resolve_separator_name(plugin_name, context.pm)
+                requested_device = _normalise_compute_device(compute_device)
+                try:
+                    plugin = self._ensure_plugin(resolved_plugin, context.pm)
+                    if plugin is None:
+                        raise PluginManagerError(f"plugin not found: {resolved_plugin}")
+                    effective_device = self._resolve_separation_device(
+                        resolved_plugin,
+                        requested_device,
+                        context,
+                    )
+                except PluginManagerError as error:
+                    bus.emit(
+                        wid,
+                        "separation_failed",
+                        {
+                            "plugin": resolved_plugin,
+                            "requested_device": requested_device,
+                            "error": str(error),
+                        },
+                    )
+                    return {"status": "failed", "error": str(error)}
+
                 bus.emit(
                     wid,
-                    "separation_failed",
+                    "separation_started",
                     {
                         "plugin": resolved_plugin,
                         "requested_device": requested_device,
-                        "error": str(error),
+                        "effective_device": effective_device,
                     },
                 )
-                return {"status": "failed", "error": str(error)}
-
-            bus.emit(
-                wid,
-                "separation_started",
-                {
-                    "plugin": resolved_plugin,
-                    "requested_device": requested_device,
-                    "effective_device": effective_device,
-                },
-            )
-            cb = make_progress_callback(bus, wid, progress_event)
-            emit_progress_event(
-                bus,
-                wid,
-                progress_event,
-                0.01,
-                plugin=resolved_plugin,
-                stage="loading_plugin",
-            )
-
-            is_manifest_plugin = self.pm.get_manifest(resolved_plugin) is not None
-            vram_reserved = False
-            try:
-                if is_manifest_plugin and effective_device == "gpu":
-                    emit_progress_event(
-                        bus,
-                        wid,
-                        progress_event,
-                        0.03,
-                        plugin=resolved_plugin,
-                        stage="preparing_vram",
-                    )
-                    vram = self.pm.prepare_vram(resolved_plugin)
-                    if not vram.get("ready", False):
-                        raise PluginManagerError(vram.get("message", "VRAM is not ready"))
-                    vram_reserved = True
-
+                cb = make_progress_callback(bus, wid, progress_event)
                 emit_progress_event(
                     bus,
                     wid,
                     progress_event,
-                    0.05,
+                    0.01,
                     plugin=resolved_plugin,
-                    stage="running_plugin",
+                    stage="loading_plugin",
                 )
-                result = await call_plugin_execute_async(
-                    plugin,
-                    self.rc,
-                    durations_sec=durations_sec,
-                    progress_callback=cb,
-                    compute_device=effective_device,
+
+                async def execute_plugin() -> dict[str, Any]:
+                    emit_progress_event(
+                        bus,
+                        wid,
+                        progress_event,
+                        0.05,
+                        plugin=resolved_plugin,
+                        stage="running_plugin",
+                    )
+                    return await call_plugin_execute_async(
+                        plugin,
+                        context.rc,
+                        durations_sec=durations_sec,
+                        progress_callback=cb,
+                        compute_device=effective_device,
+                    )
+
+                is_gpu_plugin = (
+                    effective_device == "gpu"
+                    and context.pm.get_manifest(resolved_plugin) is not None
                 )
-                cb(1.0)
-                stems = result.get("data", {}).get("stems", []) if isinstance(result, dict) else []
-                bus.emit(
-                    wid,
-                    "separation_done",
-                    {
-                        "plugin": resolved_plugin,
-                        "stems": stems,
-                        "requested_device": requested_device,
-                        "effective_device": effective_device,
-                    },
-                )
-                return result
-            except Exception as e:  # noqa: BLE001
-                bus.emit(
-                    wid,
-                    "separation_failed",
-                    {
-                        "plugin": resolved_plugin,
-                        "requested_device": requested_device,
-                        "effective_device": effective_device,
-                        "error": str(e),
-                    },
-                )
-                return {"status": "failed", "error": str(e)}
-            finally:
-                if is_manifest_plugin and vram_reserved:
-                    self.rc.release_vram(resolved_plugin)
+                vram_reserved = False
+                try:
+                    if is_gpu_plugin:
+                        emit_progress_event(
+                            bus,
+                            wid,
+                            progress_event,
+                            0.02,
+                            plugin=resolved_plugin,
+                            stage="waiting_for_gpu",
+                        )
+                        async with self._gpu_semaphore:
+                            emit_progress_event(
+                                bus,
+                                wid,
+                                progress_event,
+                                0.03,
+                                plugin=resolved_plugin,
+                                stage="preparing_vram",
+                            )
+                            vram = context.pm.prepare_vram(resolved_plugin)
+                            if not vram.get("ready", False):
+                                message = vram.get("message", "VRAM is not ready")
+                                raise PluginManagerError(message)
+                            vram_reserved = True
+                            try:
+                                result = await execute_plugin()
+                            finally:
+                                context.rc.release_vram(resolved_plugin)
+                                vram_reserved = False
+                    else:
+                        result = await execute_plugin()
+
+                    cb(1.0)
+                    stems = (
+                        result.get("data", {}).get("stems", [])
+                        if isinstance(result, dict)
+                        else []
+                    )
+                    bus.emit(
+                        wid,
+                        "separation_done",
+                        {
+                            "plugin": resolved_plugin,
+                            "stems": stems,
+                            "requested_device": requested_device,
+                            "effective_device": effective_device,
+                        },
+                    )
+                    return result
+                except Exception as e:  # noqa: BLE001
+                    bus.emit(
+                        wid,
+                        "separation_failed",
+                        {
+                            "plugin": resolved_plugin,
+                            "requested_device": requested_device,
+                            "effective_device": effective_device,
+                            "error": str(e),
+                        },
+                    )
+                    return {"status": "failed", "error": str(e)}
+                finally:
+                    if vram_reserved:
+                        context.rc.release_vram(resolved_plugin)
 
         try:
             loop = asyncio.get_running_loop()
@@ -303,9 +433,10 @@ class Orchestrator:
         self,
         plugin_name: str,
         requested_device: str,
+        context: ExecutionContext,
     ) -> str:
         """Resolve a device request against plugin capability and local hardware."""
-        manifest = self.pm.get_manifest(plugin_name)
+        manifest = context.pm.get_manifest(plugin_name)
         supported = {"cpu"}
         if manifest is not None:
             declared = manifest.get("supported_devices", ["cpu"])
@@ -324,7 +455,7 @@ class Orchestrator:
             effective_device = "gpu"
 
         if effective_device == "gpu":
-            gpu_info = self.rc.get_gpu_info()
+            gpu_info = context.rc.get_gpu_info()
             if not gpu_info.get("cuda_available", False):
                 raise PluginManagerError(
                     f"GPU was requested for {plugin_name}, but CUDA is unavailable."
@@ -343,64 +474,107 @@ class Orchestrator:
         emit_done_event: bool = True,
     ) -> asyncio.Task:
         """Start an analyzer plugin task and emit lifecycle/progress events."""
+        context = self.get_context(wid)
+        workshop_lock = self._workshop_locks[wid]
 
         async def _run() -> dict[str, Any]:
-            bus.emit(wid, "analysis_started", {"plugin": plugin_name, "track": stem_name})
-            cb = make_progress_callback(
-                bus,
-                wid,
-                progress_event,
-                extra={"track": stem_name},
-            )
-
-            try:
-                plugin = self._ensure_plugin(plugin_name)
-            except PluginManagerError as e:
+            async with workshop_lock:
                 bus.emit(
                     wid,
-                    "analysis_failed",
-                    {"plugin": plugin_name, "track": stem_name, "error": str(e)},
+                    "analysis_started",
+                    {"plugin": plugin_name, "track": stem_name},
                 )
-                return {"status": "failed", "error": str(e)}
-
-            if plugin is None:
-                message = f"plugin not found: {plugin_name}"
-                bus.emit(
+                cb = make_progress_callback(
+                    bus,
                     wid,
-                    "analysis_failed",
-                    {"plugin": plugin_name, "track": stem_name, "error": message},
+                    progress_event,
+                    extra={"track": stem_name},
                 )
-                return {"status": "failed", "error": message}
 
-            try:
-                result = await call_plugin_execute_async(
-                    plugin,
-                    self.rc,
-                    durations_sec=durations_sec,
-                    progress_callback=cb,
-                    stem_name=stem_name,
-                )
-                if emit_done_event:
-                    result_data = result.get("data", {})
-                    if isinstance(result_data, list):
-                        result_data = {"chords": result_data}
+                try:
+                    plugin = self._ensure_plugin(plugin_name, context.pm)
+                except PluginManagerError as e:
                     bus.emit(
                         wid,
-                        "analysis_done",
-                        {
-                            "plugin": plugin_name,
-                            "track": stem_name,
-                            "result": result_data,
-                        },
+                        "analysis_failed",
+                        {"plugin": plugin_name, "track": stem_name, "error": str(e)},
                     )
-                return result
-            except Exception as e:  # noqa: BLE001
-                bus.emit(
-                    wid,
-                    "analysis_failed",
-                    {"plugin": plugin_name, "track": stem_name, "error": str(e)},
+                    return {"status": "failed", "error": str(e)}
+
+                if plugin is None:
+                    message = f"plugin not found: {plugin_name}"
+                    bus.emit(
+                        wid,
+                        "analysis_failed",
+                        {"plugin": plugin_name, "track": stem_name, "error": message},
+                    )
+                    return {"status": "failed", "error": message}
+
+                async def execute_plugin() -> dict[str, Any]:
+                    return await call_plugin_execute_async(
+                        plugin,
+                        context.rc,
+                        durations_sec=durations_sec,
+                        progress_callback=cb,
+                        stem_name=stem_name,
+                    )
+
+                manifest = context.pm.get_manifest(plugin_name)
+                requirements = manifest.get("requirements", {}) if manifest else {}
+                needs_gpu = bool(
+                    float(requirements.get("gpu_memory_mb", 0) or 0) > 0
+                    and context.rc.get_gpu_info().get("cuda_available", False)
                 )
-                return {"status": "failed", "error": str(e)}
+                vram_reserved = False
+                try:
+                    if needs_gpu:
+                        emit_progress_event(
+                            bus,
+                            wid,
+                            progress_event,
+                            0.01,
+                            plugin=plugin_name,
+                            track=stem_name,
+                            stage="waiting_for_gpu",
+                        )
+                        async with self._gpu_semaphore:
+                            vram = context.pm.prepare_vram(plugin_name)
+                            if not vram.get("ready", False):
+                                message = vram.get("message", "VRAM is not ready")
+                                raise PluginManagerError(message)
+                            vram_reserved = True
+                            try:
+                                result = await execute_plugin()
+                            finally:
+                                context.rc.release_vram(plugin_name)
+                                vram_reserved = False
+                    else:
+                        result = await execute_plugin()
+
+                    if emit_done_event:
+                        result_data = result.get("data", {})
+                        if isinstance(result_data, list):
+                            result_data = {"chords": result_data}
+                        bus.emit(
+                            wid,
+                            "analysis_done",
+                            {
+                                "plugin": plugin_name,
+                                "track": stem_name,
+                                "result": result_data,
+                            },
+                        )
+                    return result
+                except Exception as e:  # noqa: BLE001
+                    bus.emit(
+                        wid,
+                        "analysis_failed",
+                        {"plugin": plugin_name, "track": stem_name, "error": str(e)},
+                    )
+                    return {"status": "failed", "error": str(e)}
+                finally:
+                    if vram_reserved:
+                        context.rc.release_vram(plugin_name)
 
         try:
             loop = asyncio.get_running_loop()
@@ -442,4 +616,9 @@ class Orchestrator:
         return plugins
 
 
-__all__ = ["Orchestrator", "make_progress_callback", "call_plugin_execute_async"]
+__all__ = [
+    "ExecutionContext",
+    "Orchestrator",
+    "call_plugin_execute_async",
+    "make_progress_callback",
+]

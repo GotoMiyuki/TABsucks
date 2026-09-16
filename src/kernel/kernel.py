@@ -225,6 +225,8 @@ class Kernel:
         self._shutdown.set()
         if self.manager is not None:
             self.manager.shutdown()
+        if self.orchestrator is not None:
+            self.orchestrator.shutdown()
         logger.info("Kernel.shutdown: 完成")
 
     # ------------------------------------------------------------------
@@ -270,7 +272,10 @@ class Kernel:
     def close_workshop(self, wid: str) -> bool:
         """关闭车间（仅释放内存，磁盘数据保留，下次启动自动加载）。"""
         mgr = self._require_manager()
-        return mgr.close(wid)
+        closed = mgr.close(wid)
+        if closed and self.orchestrator is not None:
+            self.orchestrator.release_context(wid)
+        return closed
 
     def delete_workshop(self, wid: str, *, keep_state: bool = False) -> bool:
         """删除车间（内存 + 磁盘）。
@@ -280,7 +285,10 @@ class Kernel:
                 方便用户反悔。
         """
         mgr = self._require_manager()
-        return mgr.delete(wid, keep_state=keep_state)
+        deleted = mgr.delete(wid, keep_state=keep_state)
+        if deleted and self.orchestrator is not None:
+            self.orchestrator.release_context(wid)
+        return deleted
 
     def rename_workshop(self, wid: str, new_name: str) -> bool:
         mgr = self._require_manager()
@@ -341,19 +349,20 @@ class Kernel:
         ws = mgr.get(wid)
         if ws is None:
             raise RuntimeError(f"Workshop not found: {wid}")
+        context = orch.get_context(wid)
 
         import numpy as np
 
         if audio_samples is not None:
             arr = np.asarray(audio_samples, dtype=np.float32)
-            orch.rc.set_buffer("raw", arr)
-            orch.rc.set_metadata("sample_rate", int(sample_rate))
+            context.rc.set_buffer("raw", arr)
+            context.rc.set_metadata("sample_rate", int(sample_rate))
         else:
             self._load_workshop_raw_audio_into_rc(wid, sample_rate=sample_rate)
 
         ws.start_separation(
             plugin_name,
-            model_path=self._get_separator_model_path(plugin_name),
+            model_path=self._get_separator_model_path(plugin_name, wid=wid),
         )
         inner_task = orch.start_separation(
             wid,
@@ -388,9 +397,10 @@ class Kernel:
 
         audio = load_audio_multi_channel(raw_path)
         orch = self._require_orchestrator()
-        orch.rc.set_buffer("raw", audio.samples)
-        orch.rc.set_metadata("sample_rate", int(audio.sample_rate))
-        orch.rc.set_metadata("raw_audio_path", str(raw_path))
+        context = orch.get_context(wid)
+        context.rc.set_buffer("raw", audio.samples)
+        context.rc.set_metadata("sample_rate", int(audio.sample_rate))
+        context.rc.set_metadata("raw_audio_path", str(raw_path))
 
     def _load_workshop_stem_into_rc(
         self,
@@ -403,8 +413,9 @@ class Kernel:
         immediately. Otherwise load it from the workshop cache on disk.
         """
         orch = self._require_orchestrator()
+        context = orch.get_context(wid)
         try:
-            orch.rc.get_buffer(stem_name)
+            context.rc.get_buffer(stem_name)
             return  # already loaded
         except Exception:  # noqa: BLE001
             pass
@@ -425,15 +436,21 @@ class Kernel:
         from src.audio.loader import load_audio
 
         audio = load_audio(stem_path)
-        orch.rc.set_buffer(stem_name, audio.samples)
-        if orch.rc.get_metadata("sample_rate") is None:
-            orch.rc.set_metadata("sample_rate", int(audio.sample_rate))
+        context.rc.set_buffer(stem_name, audio.samples)
+        if context.rc.get_metadata("sample_rate") is None:
+            context.rc.set_metadata("sample_rate", int(audio.sample_rate))
 
-    def _get_separator_model_path(self, plugin_name: str) -> str | None:
+    def _get_separator_model_path(
+        self,
+        plugin_name: str,
+        *,
+        wid: str | None = None,
+    ) -> str | None:
         """Return the manifest directory for a separator plugin when available."""
         orch = self._require_orchestrator()
-        resolved_name = orch._resolve_separator_name(plugin_name)
-        manifest = orch.pm.get_manifest(resolved_name)
+        pm = orch.get_context(wid).pm if wid is not None else orch.pm
+        resolved_name = orch._resolve_separator_name(plugin_name, pm)
+        manifest = pm.get_manifest(resolved_name)
         if manifest is None:
             return None
         manifest_dir = manifest.get("_manifest_dir")
@@ -502,11 +519,12 @@ class Kernel:
             raise RuntimeError(f"Workshop not found: {wid}")
 
         orch = self._require_orchestrator()
-        stems = orch.rc.get_metadata("separated_stems")
+        context = orch.get_context(wid)
+        stems = context.rc.get_metadata("separated_stems")
         if not stems:
             stems = ["vocals", "drums", "bass", "piano", "guitar", "other"]
 
-        sample_rate = int(orch.rc.get_metadata("sample_rate") or 44100)
+        sample_rate = int(context.rc.get_metadata("sample_rate") or 44100)
         track_files: dict[str, str] = {}
 
         from src.audio.loader import AudioData, save_audio
@@ -514,7 +532,7 @@ class Kernel:
         for stem in stems:
             stem_name = str(stem)
             try:
-                samples = orch.rc.get_buffer(stem_name)
+                samples = context.rc.get_buffer(stem_name)
             except Exception:  # noqa: BLE001
                 continue
             audio_samples = self._normalize_audio_samples_for_save(samples)

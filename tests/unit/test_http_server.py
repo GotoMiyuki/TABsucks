@@ -474,9 +474,10 @@ class TestMockEndpoints:
         state = client.get(f"/api/workshops/{wid}").json()
         assert state["LastTab"] == "Tab3"
 
-    def test_separate_returns_ok(self, kernel_and_client) -> None:
+    def test_separate_returns_ok(self, kernel_and_client, monkeypatch) -> None:
         kernel, client = kernel_and_client
         wid = kernel.create_workshop("X")["id"]
+        monkeypatch.setattr(kernel, "start_separation_task", lambda *args, **kwargs: None)
         r = client.post(
             f"/api/workshops/{wid}/separate",
             json={"model": "BS-RoFormer"},
@@ -484,9 +485,10 @@ class TestMockEndpoints:
         assert r.status_code == 200
         assert r.json()["ok"] is True
 
-    def test_analyze_returns_ok(self, kernel_and_client) -> None:
+    def test_analyze_returns_ok(self, kernel_and_client, monkeypatch) -> None:
         kernel, client = kernel_and_client
         wid = kernel.create_workshop("X")["id"]
+        monkeypatch.setattr(kernel, "start_analysis_task", lambda *args, **kwargs: None)
         r = client.post(
             f"/api/workshops/{wid}/analyze",
             json={"track": "vocals", "plugin": "chord_ismir2019"},
@@ -662,6 +664,13 @@ class TestMockEndpoints:
     def test_audio_stream(self, kernel_and_client) -> None:
         kernel, client = kernel_and_client
         wid = kernel.create_workshop("X")["id"]
+        ws = kernel.manager.get(wid)
+        stem_path = ws.cache.track_audio_path("vocals", "vocals.wav")
+        stem_path.parent.mkdir(parents=True, exist_ok=True)
+        stem_path.write_bytes(b"RIFF" + bytes(64))
+        ws.state.tab_state.tab2.track_audio_file_path = {
+            "vocals": ws.cache.to_relative(stem_path),
+        }
         r = client.get(f"/api/workshops/{wid}/audio/vocals")
         assert r.status_code == 200
         assert "audio/wav" in r.headers["content-type"]

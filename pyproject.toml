@@ -8,6 +8,9 @@ line_length = 100
 
 [tool.ruff]
 line-length = 100
+extend-exclude = ["src/plugins/chord/external"]
+
+[tool.ruff.lint]
 select = ["E", "F", "W", "I", "N", "UP", "B", "C4"]
 ignore = ["E501"]
 

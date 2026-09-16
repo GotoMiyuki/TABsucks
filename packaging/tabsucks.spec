@@ -44,7 +44,6 @@ hiddenimports = [
     "src.plugins._example_separator",
     "src.plugins._example_analyzer",
     "src.plugins.separation.model_1.separator",
-    "src.plugins.chord.chordnet_2e1d",
     "src.plugins.chord.btc_sl",
     "src.plugins.chord.ismir2019",
     "src.plugins.chord.bass_root",

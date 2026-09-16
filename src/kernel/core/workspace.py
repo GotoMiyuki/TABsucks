@@ -175,7 +175,7 @@ class WorkspaceManager:
         if workspace_id in self._workspaces:
             del self._workspaces[workspace_id]
             if self._active_id == workspace_id:
-                self._active_ids = next(
+                self._active_id = next(
                     iter(self._workspaces.keys()), None
                 )
             return True
