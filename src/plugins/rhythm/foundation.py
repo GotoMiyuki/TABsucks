@@ -5,9 +5,9 @@ import numpy as np
 from typing import List, Tuple, Dict, Any
 
 from src.plugins import BasePlugin
+from src.audio.contracts import to_mono
 from src.kernel.core import ResourceController
 from src.plugins.rhythm.utils import (
-    to_mono,
     extract_band_envelopes,
     estimate_global_bpm,
     build_tempo_map,
@@ -45,8 +45,7 @@ class FoundationRhythmPlugin(BasePlugin):
         print(f"[{self.name}] Starting pre-separation rhythm analysis...")
 
         # 1. 资源获取
-        raw_audio = rc.get_buffer("raw")
-        sample_rate = rc.get_metadata("sample_rate") or 22050
+        raw_audio, sample_rate = rc.get_audio_buffer("raw")
 
         mono_samples = to_mono(raw_audio)
 

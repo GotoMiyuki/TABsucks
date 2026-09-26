@@ -140,7 +140,10 @@ class ExampleSeparatorPlugin(BasePlugin):
 
         # 3. 写回 RC buffer
         for name, arr in stems.items():
-            rc.set_buffer(name, arr)
+            if hasattr(rc, "set_audio_buffer"):
+                rc.set_audio_buffer(name, arr, int(sample_rate))
+            else:
+                rc.set_buffer(name, arr)
         rc.set_metadata(
             "separated_stems",
             EXAMPLE_STEMS,
@@ -219,8 +222,13 @@ async def run_async(
         if i < steps:
             await asyncio.sleep(durations_sec / steps)
 
+    sample_rate = int(rc.get_metadata("sample_rate") or 22050)
     for name in EXAMPLE_STEMS:
-        rc.set_buffer(name, np.zeros(n_samples, dtype=np.float32))
+        silence = np.zeros((1, n_samples), dtype=np.float32)
+        if hasattr(rc, "set_audio_buffer"):
+            rc.set_audio_buffer(name, silence, sample_rate)
+        else:
+            rc.set_buffer(name, silence)
     rc.set_metadata("separated_stems", EXAMPLE_STEMS)
     rc.set_metadata("separation_model", "example_separator")
     return {

@@ -62,7 +62,8 @@ TABsucks 是一个核心分析在本机执行、离线优先的智能音乐应�
 - Tab2 请求 GPU 分离时，如插件仅支持 CPU，会自动回退到 CPU；如本机 CUDA 不可用，则明确提示失败；
 - 音乐车间状态自动保存，支持重启恢复；
 - 业务插件可通过 `manifest.json` 发现和按需加载，示例等内置插件也可由代码显式注册；
-- 长耗时分析通过后台任务执行，并通过 SSE 推送进度；
+- 长耗时分离/分析由可查询、可取消的后台任务执行；同车间冲突任务拒绝并发，关闭/删除会等待安全退出，进度通过 SSE 推送；
+- 音频缓冲统一使用 float32、声道优先布局和逐缓冲采样率；上传分块落盘，超预算音频在解码前拒绝；
 - Bass Root Detector 使用临时单声道输入，避免双声道数组造成异常内存申请；
 - Windows 启动器提供实时日志、端口探测、浏览器自动打开和安全退出。
 
@@ -187,13 +188,14 @@ flowchart TD
     B --> API[FastAPI / Uvicorn]
     API --> K[Kernel]
     K --> WM[WorkshopManager]
-    K --> AE[AnalysisEngine]
-    K --> RC[ResourceController]
-    K --> PM[PluginManager]
+    K --> O[Orchestrator]
+    O --> EC[每个 Workshop 独立 ExecutionContext]
+    EC --> RC[ResourceController]
+    EC --> PM[PluginManager]
     PM --> SEP[音轨分离插件]
     PM --> CH[和弦分析插件]
     PM --> RH[节奏分析插件]
-    RC --> FS[(本地音频 / 模型 / 车间缓存)]
+    WM --> FS[(WorkshopCache / state.json / 音频与分析文件)]
     API --> SSE[SSE 进度事件]
     SSE --> B
 ```
@@ -202,11 +204,17 @@ flowchart TD
 
 - **Kernel：** 负责系统启动、车间生命周期和整体关闭；
 - **WorkshopManager：** 管理音乐车间的创建、加载、切换、保存和删除；
-- **AnalysisEngine：** 编排分离与分析任务；
-- **ResourceController：** 管理模型、音频缓冲和 CPU/GPU 资源；
-- **PluginManager：** 扫描插件清单并完成注册、加载和调用；
+- **Orchestrator：** 为每个车间建立独立执行上下文，并调度分离与逐轨分析插件；
+- **TaskService：** 管理任务接单、去重、取消、终态和安全排空；
+- **WorkshopJobs：** 执行分离/分析任务，组织输入装载与结果提交；
+- **ResourceController：** 管理运行时模型、音频缓冲和资源预算；
+- **PluginManager：** 扫描插件清单、延迟加载插件并执行依赖/资源检查；
 - **FastAPI/Uvicorn：** 提供 HTTP API、文件服务和 SSE 事件流；
 - **Windows Launcher：** 管理本地服务、日志、端口和浏览器启动。
+
+`AnalysisEngine.run()` 仍保留完整分析流水线实现，但当前 UI 的分离与逐轨分析入口由 Kernel/Orchestrator 直接调用插件，尚未接入该整体流水线。当前车间状态和分析产物保存在 WorkshopCache 文件中，不使用 SQLite。
+
+`state.json` 使用版本化 schema（当前 v1）；旧文件在校验和备份后迁移，未来版本拒绝改写。模块边界、兼容入口及验证范围见 [实现状态](docs/implementation_status.md)。
 
 ## 插件系统
 
@@ -218,6 +226,8 @@ flowchart TD
 | 和弦分析 | BTC-SL / ChordMini | 和弦标签与时间轴 |
 | 和弦分析 | ISMIR 2019 | 和弦识别结果 |
 | 节奏分析 | Foundation Rhythm Analyzer | BPM、拍号、节拍与复杂度 |
+
+分离接口默认选择 `separation_bs_roformer`；旧的 BS-RoFormer 显示名称也映射到该真实插件。示例分离器必须显式选择。插件 manifest 被发现不代表模型权重、依赖或硬件已就绪；这些条件不满足时任务会明确失败，不会静默生成模拟结果。真实模型资产与硬件组合的发布验证状态见 [Windows 发行指南](docs/windows_release.md)。
 
 插件清单示例：
 
@@ -264,7 +274,7 @@ TABsucks 将课程要求中的软件工程实践落到仓库和发布流程中�
 - `CodeQL`：对 Python 代码执行静态安全分析；
 - `AI Code Review`：对 Pull Request 执行自动化评审。
 
-普通 lint/test/build CI、代码签名和自动 Release 仍属于后续完善项，README 不将它们描述为已经完成。
+`CI` 运行 Ruff correctness 子集、非慢速/非联网 Python 测试和 JavaScript 测试；不包含完整 Ruff 风格检查、mypy、桌面安装包构建或自动 Release。代码签名和自动 Release 仍待完善。
 
 ## 文档导航
 

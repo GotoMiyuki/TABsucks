@@ -1,0 +1,333 @@
+/* ════════════════════════════════════════
+   Step 1: INPUT
+   ════════════════════════════════════════ */
+
+.step-center {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 24px;
+}
+.upload-row {
+    display: flex;
+    gap: 16px;
+    align-items: center;
+}
+
+/* ── 分离进度环 ── */
+.sep-ring-wrap {
+    position: relative;
+    width: 48px;
+    height: 48px;
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+.sep-ring {
+    width: 44px;
+    height: 44px;
+    transform: rotate(-90deg);
+}
+.sep-ring-bg {
+    fill: none;
+    stroke: var(--border-dim);
+    stroke-width: 3;
+}
+.sep-ring-fg {
+    fill: none;
+    stroke: var(--accent);
+    stroke-width: 3;
+    stroke-linecap: round;
+    stroke-dasharray: 113.1;   /* 2 * PI * 18 */
+    stroke-dashoffset: 113.1;
+    transition: stroke-dashoffset 0.15s linear;
+}
+.sep-ring-wrap.done .sep-ring-fg {
+    stroke: #34c759;
+}
+.sep-ring-label {
+    position: absolute;
+    font-size: 9px;
+    font-weight: 600;
+    color: var(--text-dim);
+    letter-spacing: 0;
+}
+.sep-ring-wrap.done .sep-ring-label {
+    color: #34c759;
+}
+
+.sep-model-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 16px;
+}
+.sep-model-label { color: var(--text-dim); font-size: 12px; text-transform: uppercase; }
+.sel-separator {
+    flex: 1;
+    max-width: 360px;
+    background: transparent;
+    border: 1px solid var(--border-dim);
+    color: var(--text);
+    font-family: var(--font);
+    font-size: 13px;
+    padding: 6px 10px;
+    border-radius: 4px;
+}
+.sep-device-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    width: 100%;
+    max-width: 720px;
+    margin: -4px 0 20px;
+}
+.sep-device-label {
+    color: var(--text-dim);
+    font-size: 12px;
+    text-transform: uppercase;
+    min-width: 70px;
+}
+.sep-device-option {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    color: var(--text);
+    font-size: 12px;
+    cursor: pointer;
+}
+.sep-device-option input {
+    accent-color: var(--accent);
+}
+
+.input-url-wrap {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+}
+.url-input {
+    background: transparent;
+    border: 1px solid var(--border-dim);
+    color: var(--text);
+    font-family: var(--font);
+    font-size: 13px;
+    padding: 8px 14px;
+    width: 360px;
+    outline: none;
+    transition: border-color 0.15s;
+}
+.url-input:focus { border-color: var(--accent); }
+.url-input::placeholder { color: var(--text-dim); }
+
+.audio-info {
+    display: flex;
+    gap: 12px;
+}
+.info-tag {
+    font-size: 11px;
+    color: var(--text-dim);
+    border: 1px solid var(--border-dim);
+    padding: 4px 10px;
+}
+
+/* ════════════════════════════════════════
+   Step 2: SELECT
+   ════════════════════════════════════════ */
+
+.tab-workflow-panel {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 36px 24px;
+    position: relative;
+    width: 100%;
+}
+
+.top-right-abs {
+    position: absolute;
+    top: 16px;
+    right: 24px;
+    z-index: 2;
+}
+
+.step-hint {
+    font-size: 13px;
+    color: var(--text-dim);
+    text-align: center;
+    margin-bottom: 20px;
+    letter-spacing: 0.5px;
+}
+
+/* Tab2 音轨多选列表 */
+.section-heading {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    max-width: 720px;
+    width: 100%;
+    margin: 24px 0 12px;
+    color: var(--text);
+    font-size: 13px;
+    font-weight: 600;
+}
+.selection-count {
+    color: var(--text-dim);
+    font-size: 11px;
+    font-variant-numeric: tabular-nums;
+}
+.stem-selection-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    max-width: 720px;
+    width: 100%;
+}
+.stem-row {
+    width: 100%;
+    min-height: 62px;
+    padding: 0 20px;
+    border: 1px solid var(--border-dim);
+    background: transparent;
+    color: var(--text);
+    font-family: var(--font);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    cursor: pointer;
+    transition: border-color 0.15s, background 0.15s, box-shadow 0.15s;
+    position: relative;
+}
+.stem-row:hover:not(:disabled) { border-color: var(--text); }
+.stem-row.selected {
+    border-color: var(--text);
+    background: rgba(255,255,255,0.05);
+    box-shadow: inset 5px 0 0 var(--track-color), inset -5px 0 0 var(--track-color);
+}
+.stem-row:disabled {
+    cursor: default;
+    opacity: 0.35;
+}
+.stem-row .stem-label {
+    font-size: 13px;
+    font-weight: 600;
+    text-transform: uppercase;
+}
+.stem-row .stem-select-indicator {
+    width: 20px;
+    height: 20px;
+    border: 1px solid var(--border-dim);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+.stem-row.selected .stem-select-indicator {
+    border-color: var(--text);
+    background: var(--text);
+}
+.stem-row.selected .stem-select-indicator::after {
+    content: '';
+    width: 5px;
+    height: 8px;
+    border: 1.5px solid #000;
+    border-top: none;
+    border-left: none;
+    transform: rotate(45deg) translate(-1px, -1px);
+}
+
+/* 进度条 */
+.sep-progress-wrap {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 16px;
+    width: 100%;
+    max-width: 400px;
+}
+.progress-bar {
+    flex: 1;
+    height: 2px;
+    background: var(--border-dim);
+}
+.progress-fill {
+    height: 100%;
+    width: 0;
+    background: var(--accent);
+    transition: width 0.12s linear;
+}
+#sep-percent {
+    font-size: 11px;
+    color: var(--text-dim);
+    min-width: 30px;
+}
+
+/* 分析器配置列表 */
+.analysis-config-list {
+    width: 100%;
+    max-width: 560px;
+}
+.analysis-config-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 12px 0;
+    border-bottom: 1px solid var(--border-dim);
+}
+.analysis-config-row:last-child { border-bottom: none; }
+.analysis-config-row .track-color {
+    width: 3px;
+    height: 20px;
+    flex-shrink: 0;
+}
+.analysis-config-row .track-name {
+    width: 80px;
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+}
+.analysis-config-row select {
+    background: transparent;
+    border: 1px solid var(--border-dim);
+    color: var(--text);
+    font-family: var(--font);
+    font-size: 11px;
+    padding: 5px 10px;
+    outline: none;
+    cursor: pointer;
+    -webkit-appearance: none;
+    appearance: none;
+}
+.analysis-config-row select:focus { border-color: var(--accent); }
+.analysis-config-row .btn-run {
+    padding: 5px 14px;
+    background: transparent;
+    border: 1px solid var(--accent);
+    color: var(--accent);
+    font-family: var(--font);
+    font-size: 11px;
+    cursor: pointer;
+    transition: background 0.15s, color 0.15s;
+}
+.analysis-config-row .btn-run:hover { background: var(--accent); color: #fff; }
+.analysis-config-row .btn-run:disabled { opacity: 0.4; cursor: default; }
+
+.status-badge {
+    font-size: 10px;
+    padding: 2px 8px;
+    margin-left: auto;
+    letter-spacing: 0.5px;
+}
+.status-badge.pending { color: var(--text-dim); }
+.status-badge.running { color: #ff9500; border: 1px solid rgba(255,149,0,0.3); }
+.status-badge.done { color: #34c759; border: 1px solid rgba(52,199,89,0.3); }
+
+.analyze-sub-hint {
+    font-size: 11px;
+    color: var(--text-dim);
+    text-align: center;
+    margin-top: 16px;
+}

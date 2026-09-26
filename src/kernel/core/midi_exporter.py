@@ -1,4 +1,4 @@
-"""MIDI 导出模块，将分离音轨导出为标准 MIDI 文件。"""
+"""MIDI 导出模块，将和弦区间导出为标准 MIDI 文件。"""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from src.separation.separator import SeparationResult
+    from src.plugins.separation import SeparationResult
 
 
 class MidiExporterError(Exception):
@@ -38,21 +38,9 @@ class MidiExporter:
         Raises:
             MidiExporterError: 导出失败。
         """
-        # TODO: 接入 MIDI 转换算法（如 SPIN、Melodia）
-        # 目前仅创建空的 MIDI 占位文件
-        output_path = Path(output_path)
-
-        try:
-            # 占位：创建空 MIDI 文件头
-            header = "MIDI file placeholder\n"
-            header += f"Source SR: {separation_result.sample_rate}\n"
-            header += f"Export start: {start}s\n"
-            header += f"Export duration: {duration}s\n"
-
-            with output_path.open("w", encoding="utf-8") as f:
-                f.write(header)
-        except Exception as e:
-            raise MidiExporterError(f"MIDI 导出失败: {e}") from e
+        raise MidiExporterError(
+            "音频分离结果不等于 MIDI 转录；请使用 export_chord_tracks_to_midi 导出和弦区间"
+        )
 
 
 _TRACK_PROGRAMS = {

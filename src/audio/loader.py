@@ -108,7 +108,8 @@ class AudioData:
     和引用透明。frozen=True 防止意外修改。
 
     Attributes:
-        samples: 单声道音频样本，形状为 (n_samples,)，数据类型为 float32。
+        samples: 音频样本；单声道 loader 可为 (n_samples,)，多声道 loader
+            统一为 (channels, n_samples)，数据类型为 float32。
         sample_rate: 采样率(Hz)，如 44100、22050。
         duration: 时长（秒），由 samples 数量除以采样率计算得出。
     """
@@ -119,10 +120,8 @@ class AudioData:
 
     @property
     def channels(self) -> int:
-        """音频通道数，等于 samples 的维度数。
-        1 维 → 单声道，2 维 → 多声道（如立体声）。
-        """
-        return self.samples.ndim
+        """音频通道数；二维数组按 (channels, samples) 解释。"""
+        return 1 if self.samples.ndim == 1 else self.samples.shape[0]
 
     @property
     def n_samples(self) -> int:
@@ -221,6 +220,7 @@ def load_audio_multi_channel(path: str | Path) -> AudioData:
     """
     path = _validate_path(path)
     _validate_format(path)
+    _check_audio_memory_budget(path)
 
     try:
         # mono=False: 不转单声道，保留原始声道信息
@@ -233,6 +233,35 @@ def load_audio_multi_channel(path: str | Path) -> AudioData:
         return AudioData(samples=y, sample_rate=sr, duration=duration)
     except Exception as e:
         raise AudioLoaderError(f"加载失败: {e}") from e
+
+
+def _check_audio_memory_budget(path: Path, budget_mb: int | None = None) -> None:
+    """Reject a known-too-large decode before allocating raw and stem arrays.
+
+    Eight decoded copies is a conservative allowance for the raw mix, six
+    stems, and one transient conversion. Unknown formats still follow the
+    decoder's normal error path.
+    """
+    import soundfile as sf
+
+    try:
+        budget = int(budget_mb if budget_mb is not None else
+                     os.environ.get("TABSUCKS_AUDIO_MEMORY_BUDGET_MB", "1024"))
+    except ValueError as error:
+        raise AudioLoaderError("TABSUCKS_AUDIO_MEMORY_BUDGET_MB 必须是正整数") from error
+    if budget <= 0:
+        raise AudioLoaderError("音频内存预算必须是正整数")
+    try:
+        info = sf.info(path)
+    except (OSError, RuntimeError):
+        return
+    estimated = int(info.frames) * int(info.channels) * 4 * 8
+    available = budget * 1024 * 1024
+    if estimated > available:
+        raise AudioLoaderError(
+            f"解码及分轨预计需要 {estimated / 1024**2:.1f} MiB，"
+            f"超过预算 {budget} MiB (TABSUCKS_AUDIO_MEMORY_BUDGET_MB)"
+        )
 
 
 def save_audio(path: str | Path, data: AudioData) -> None:
@@ -265,7 +294,10 @@ def save_audio(path: str | Path, data: AudioData) -> None:
         # soundfile.write 要求 samples 为 (n_samples, channels) 或 (n_samples,)
         # AudioData.samples 形状为 (n_samples,) 或 (channels, n_samples)
         # 多声道情况下需要转置 .T
-        sf.write(path, data.samples.T, data.sample_rate)
+        sf.write(
+            path, data.samples.T, data.sample_rate,
+            subtype="FLOAT" if path.suffix.lower() == ".wav" else None,
+        )
     except Exception as e:
         raise AudioLoaderError(f"保存失败: {e}") from e
 

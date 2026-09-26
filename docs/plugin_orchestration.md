@@ -1,306 +1,69 @@
-# Plugin 编排说明（Workshop ↔ Kernel ↔ Plugin Manager ↔ Analysis Engine）
+# 插件编排与运行时契约
 
-> 来源：本分支 `p1-workshop-cache-system` 的核心设计。
-> 状态：MVP 跑通的最小实现已落地（175 unit tests pass），文档随代码演进。
->
-> 关联模块：
->
-> * [src/kernel/core/kernel.py](../../src/kernel/kernel.py) — 顶层 `Kernel` 进程入口
-> * [src/kernel/core/kernel_orchestrator.py](../../src/kernel/core/kernel_orchestrator.py) — `Orchestrator` 编排层
-> * [src/plugins/_example_separator](../../src/plugins/_example_separator/) — MVP 范例
-> * [src/plugins/_example_analyzer](../../src/plugins/_example_analyzer/) — MVP 范例
-> * 会议 [docs/meetings/2026-6-16-meeting.md](../../meetings/2026-6-16-meeting.md) §2 — PM/AE/RC 职权划分
+本文说明当前实现。早期版本的分支来源、测试数量和未来计划已归档在开发日志中，不作为现行实现说明。
 
----
+## 调用路径
 
-## 一、目标
-
-让 MVP 阶段**真实跑通**从 UI 点击到 plugin 执行的完整链路，并在此基础上：
-
-1. **Plugin 写作者有清晰模板**（_example_*）
-2. **其他同事**（PM/RC/AE）知道接口契约在哪
-3. **未来接入真 plugin**（BS-RoFormer / madmom / ismir2019）的替换点明确
-
-## 二、架构图
-
-```
-┌──────────────────────────────────────────────────────────────┐
-│   Browser  (HTML + JS in src/ui/static/)                     │
-│   触发：                                                       │
-│   - GET  /api/plugins/separators                             │
-│   - POST /api/workshops/{wid}/separate                       │
-└────────┬──────────────────────────────────────┬──────────────┘
-         │ FastAPI BackgroundTasks              │ SSE /api/events
-         ▼                                      ▲
-┌──────────────────────────────────────────────────────────────┐
-│   src/ui/api/                                                  │
-│   - analysis.py  → Kernel.start_separation_task              │
-│   - events.py    → Kernel.bus.subscribe (SSE 转发)            │
-│   - plugins.py   → Kernel.list_separator_plugins             │
-└────────┬──────────────────────────────────────┬──────────────┘
-         │                                      │
-         ▼                                      │ events
-┌──────────────────────────────────────────────────────────────┐
-│   src/kernel/kernel.py::Kernel                                │
-│   - event_bus: EventBus                                       │
-│   - manager:    WorkshopManager                              │
-│   - orchestrator: Orchestrator  ← 新                         │
-└────────┬─────────────────────────────────────────────────────┘
-         │
-         ▼
-┌──────────────────────────────────────────────────────────────┐
-│   src/kernel/core/kernel_orchestrator.py::Orchestrator       │
-│                                                                  │
-│   ┌─────────────┐    ┌─────────────────┐                       │
-│   │ Resource-   │◄──►│ PluginManager   │   (RC)                  │
-│   │ Controller  │    │  - register     │   (PM)                  │
-│   │             │    │  - execute      │                        │
-│   └─────────────┘    └────────┬────────┘                       │
-│                               │                              │
-│                               ▼                              │
-│                  ┌────────────────────────┐                │
-│                  │   AnalysisEngine       │  (AE)            │
-│                  │   run(progress_cb)     │                  │
-│                  └────────────────────────┘                │
-│                              │                              │
-│   start_separation() ──────►│                              │
-│   start_analysis()   ──────►│                              │
-│                              ▼                              │
-│                    调 pm.execute(plugin_name, rc=rc,       │
-│                                    **kwargs)               │
-│                              │                              │
-│                              ▼                              │
-│   ┌─────────────────────────────────────────────┐         │
-│   │  Plugin.execute(rc, **kwargs) → dict       │  (plugin) │
-│   │  - 读 rc.get_buffer("raw") / get_metadata()│         │
-│   │  - 异步跑实际推理（mock：asyncio.sleep）  │         │
-│   │  - 周期性回调 progress_callback(progress) │         │
-│   │  - 写 rc.set_buffer("vocals"/"drums"/...) │         │
-│   │  - 返回 {status, data: {stems:[...]}}     │         │
-│   └─────────────────────────────────────────────┘         │
-│                              │                              │
-│                              ▼                              │
-│   bus.emit("wid", "separation_done", {stems})               │
-└──────────────────────────────────────────────────────────────┘
+```mermaid
+sequenceDiagram
+    participant UI as Browser UI
+    participant API as FastAPI
+    participant K as Kernel
+    participant O as Orchestrator
+    participant PM as PluginManager
+    participant P as 插件
+    UI->>API: POST /api/workshops/{wid}/separate
+    API->>K: start_separation_task(wid, plugin_id)
+    K->>K: TaskService 接单/去重/占用车间
+    K->>O: 获取该车间的 ExecutionContext
+    O->>PM: 解析并确保插件已实例化
+    O->>P: 执行插件
+    P-->>O: 进度/结果
+    O-->>K: 进度与结果
+    K->>K: 写产物并持久化 state.json
+    K-->>UI: 通过 EventBus/SSE 发布终态
 ```
 
-## 三、时序：分离任务端到端
+分离与逐轨分析由 `Kernel` 委托 `WorkshopJobs`，通过 `TaskService` 接单，随后由 `Orchestrator` 通过当前车间的 `PluginManager` 获取插件。Orchestrator 仅报告进度和执行结果；WorkshopJobs 组织产物提交，Workshop 在产物与状态成功持久化后发布单次终态。SSE 断线后用任务查询接口恢复状态。图中的 Kernel 步骤包含其委托的 WorkshopJobs 服务。
 
-```
-[Browser] POST /api/workshops/abc/separate
-     │
-     ▼
-[analysis.py trigger_separation] ─► BackgroundTasks.add_task
-     │
-     ▼ async
-[Kernel.start_separation_task(wid, plugin_name)]
-     │
-     ▼
-[Orchestrator.start_separation(wid, bus, plugin_name)]
-     │
-     ├── bus.emit("abc", "separation_started", {plugin})
-     │
-     ▼   await call_plugin_execute_async(plugin, rc)
-     │
-[plugin.execute(rc, progress_callback=cb)]
-     │
-     ├── for step in 0..100:
-     │     cb(step/100)
-     │   (cb 内 → bus.emit("abc", "separation_progress", {progress, step}))
-     │
-     ├── rc.set_buffer("vocals", arr)
-     ├── rc.set_buffer("drums", arr)
-     ├── ... (6 道)
-     ├── rc.set_metadata("separated_stems", [...])
-     │
-     └── returns {status: "success", data: {stems: [...]}}
-     │
-     ▼
-[Orchestrator._run] bus.emit("abc", "separation_done", {stems})
-     │
-     ▼
-[SSE 推到 Browser]              [HTTP 200 {ok, task}]
-     │
-     ▼
-[app.js EventSource.onmessage]
-     ├── separation_progress → 更新进度环
-     └── separation_done    → 切到 Tab3 / 6 道 wav 列表
-```
+## 隔离与资源管理
 
-## 四、Plugin 接口（不可改）
+- 每个 Workshop 持有独立的 `ExecutionContext`：`ResourceController`、`PluginManager` 和 `AnalysisEngine` 不跨车间共享。
+- 同一 Workshop 从输入导入、解码、推理直到提交终态只允许一项修改任务；重复请求复用同一任务 ID，冲突返回 409。进程级 GPU 信号量限制 GPU 插件并发。纯 CPU 任务不占用此 GPU 信号量。
+- `ResourceController` 使用线程锁保护运行时字典，并提供模型缓存和 VRAM 预算接口。VRAM 预算是运行前检查/记账，不等同于操作系统显存隔离。
+- Workshop 关闭、删除或 Kernel 异步退出先停止接单，再取消/排空工作线程和提交，最后清理上下文。同步模型只能等待退出，不能强制抢占。
 
-源自 [src/plugins/__init__.py](../../src/plugins/__init__.py) 与同事 `p1-ac-pm` 分支的既成契约：
+RC 的音频专用接口存储 `float32 (channels, samples)` 和每缓冲采样率；单声道输入也保持二维。插件需要一维单声道时在入口转换。WAV stem 以 FLOAT subtype 保存，重载后精度与在线分析一致。原音频解码预算默认 1024 MiB，可由 `TABSUCKS_AUDIO_MEMORY_BUDGET_MB` 调整。
 
-```python
-from abc import ABC, abstractmethod
-from typing import Any
+## 分离插件契约
 
-class Plugin(ABC):
-    @property
-    @abstractmethod
-    def name(self) -> str: ...        # str ID, e.g. "separation_bs_roformer"
+API 默认插件 ID 为 `separation_bs_roformer`。历史显示名称 `BS-RoFormer`、`BS-RoFormer-SW`、`BS-Roformer-SW` 及旧模型文件标签映射到同一真实插件 ID。默认分离不自动调用 `example_separator`。
 
-    @property
-    @abstractmethod
-    def version(self) -> str: ...     # "0.0.1"
+插件通过 manifest 声明入口、阶段、输入、输出、依赖及资源需求。PluginManager 延迟导入并实例化 manifest 插件。缺少入口、依赖或模型资源时，任务以 `separation_failed` 报告明确原因；manifest 被发现本身不等于当前环境具备可推理条件。
 
-    @abstractmethod
-    def execute(self, rc, **kwargs) -> dict[str, Any]:
-        """执行；返回值必须含 'status'。"""
-        ...
-```
+示例插件仍可在 UI/API 明确选择 `example_separator` 时用于开发和演示，其输出为模拟数据。
 
-**关键约束**：
-1. plugin 通过 `rc.get_buffer / set_buffer / get_metadata / set_metadata` 与 ResourceController 通信
-2. plugin 通过 `progress_callback`（0~1）上报进度（**禁止**自己 emit bus）
-3. plugin 不直接做文件 IO（写盘由调用方 Orchestrator/MusicWorkshop 负责）
+## 分析路径边界
 
-## 五、Orchestrator 接口（新增）
+Tab3 的正常路径按用户选择调用单个 manifest 分析插件，例如 `chord_ismir2019` 或 `chord_btc_sl`。当前可用和弦插件以 `src/plugins/chord/manifest.json` 为准；`chord_chordnet_2e1d` 已删除，不是有效插件 ID。
 
-```python
-class Orchestrator:
-    def __init__(self, *, rc=None, pm=None, register_examples=True): ...
+`AnalysisEngine.run()` 保留完整流水线代码，但 UI 目前没有调用它。它属于尚待整合的路径；如要将其作为正式产品流程，需另行接通任务入口并完成端到端验证。当前 API 文档不得声称逐轨分析会自动执行整条流水线。
 
-    def list_separator_plugins() -> list[dict]   # 给 UI 下拉列表
-    def list_analyzer_plugins()  -> list[dict]
+该流水线的分离阶段也只使用 manifest 插件；插件不可用时明确失败，不再回退到已移除的 `separator_old_type.py`。
 
-    def start_separation(wid, bus, *, plugin_name, audio_samples=None,
-                         sample_rate=22050, durations_sec=3.0) -> asyncio.Task
-    def start_analysis(wid, bus, *, plugin_name, stem_name="vocals",
-                       durations_sec=1.5) -> asyncio.Task
-```
+## 主要实现位置
 
-返回的 `asyncio.Task` 在 `asyncio.run()` / FastAPI BackgroundTasks 异步上下文中跑。**同步上下文** 调用 `start_separation` 会创建新 event loop（MVP 兜底，**P1 应改为异步调用**）。
+| 职责 | 文件 |
+|---|---|
+| 任务入口与车间生命周期 | `src/kernel/kernel.py` |
+| 任务监督、音频装载和产物提交 | `src/kernel/core/workshop_jobs.py` |
+| 唯一线程安全事件总线 | `src/kernel/core/event_bus.py` |
+| 插件编排、隔离和 GPU 并发 | `src/kernel/core/kernel_orchestrator.py` |
+| manifest 发现、实例化和资源检查 | `src/kernel/core/plugin_manager.py` |
+| 单体分析流水线（当前未接入 UI 主路径） | `src/kernel/core/analysis_engine.py` |
+| HTTP 插件枚举 | `src/ui/api/plugins.py` |
+| API 任务入口 | `src/ui/api/analysis.py` |
 
-## 六、Kernel 暴露方法（供 HTTP 层用）
+## CI 基线
 
-```python
-class Kernel:
-    def list_separator_plugins() -> list[dict]   # 转 orchestrator
-    def list_analyzer_plugins()  -> list[dict]
-
-    def start_separation_task(wid, *, plugin_name="example_separator",
-                              audio_samples=None, sample_rate=22050,
-                              durations_sec=3.0) -> asyncio.Task
-    def start_analysis_task(wid, *, plugin_name="example_analyzer",
-                            stem_name="vocals", durations_sec=1.5) -> asyncio.Task
-```
-
-UI 层调 `kernel.start_separation_task(wid)`，不需要直接 import orchestrator。
-
-## 七、HTTP 端点（新增 / 修改）
-
-| Method | Path | 实现 |
-|--------|------|------|
-| GET | `/api/plugins/separators` | 真实现：`Kernel.list_separator_plugins()` |
-| GET | `/api/plugins/analyzers` | 真实现：`Kernel.list_analyzer_plugins()` |
-| POST | `/api/workshops/{wid}/separate` | **真实现**：调 `Kernel.start_separation_task`，通过 BackgroundTasks fire-and-forget |
-| POST | `/api/workshops/{wid}/analyze` | **真实现**：调 `Kernel.start_analysis_task` |
-| GET | `/api/events` | SSE — 见 [HTTP_API.md](../../HTTP_API.md) |
-
-SSE event payload 字段（与会议 §5.2 一致）：
-```json
-{
-  "type": "separation_progress",
-  "payload": {"progress": 0.5},
-  "workshop_id": "abc",
-  "emitted_at": 1783765628.0
-}
-```
-
-## 八、上下游协作（团队对接）
-
-### 8.1 其他同事如何扩展 PM
-
-未来走 manifest 扫盘（`p1-ac-pm` 已实现 `SeparationPluginManager`），**新增目录**：
-
-```
-src/plugins/separation/model_mynew/
-    __init__.py           # SeparationPlugin + manifest
-    manifest.json         # {name, class, entrypoint, requirements, phase}
-    model weights / code  # 见 audio-separator 文档
-```
-
-`Kernel.list_separator_plugins()` 改为调 `pm.get_available_plugins()` 即可。
-
-### 8.2 其他同事如何扩展 AE
-
-`AnalysisEngine.run(progress_callback)` 已经能调度整个流水线。未来拆出 stage 子方法（`_run_rhythm / _run_separation / _run_chord`），Orchestrator 现在调的是 `engine.run()` 的等价 fragment（mock 通过 plugin.execute）。
-
-### 8.3 RC 集成
-
-`p1-ac-pm` 分支的 `ResourceController_s`（thread-safe + VRAM 配额）通过修改 Orchestrator 的 `__init__`：
-```python
-from src.kernel.core.resource_controller_s import ResourceController_s
-orch = Orchestrator(rc=ResourceController_s())
-```
-
-MVP 阶段使用基类 `ResourceController`。**P1 切换**到 `_s` 版本后自动获得：
-* `threading.RLock` 保护
-* `allocate_vram` / `release_vram`（在大型 BS-RoFormer 跑前预防 OOM）
-
-## 九、已跑通的端到端链路（测试覆盖）
-
-`tests/unit/test_kernel_orchestration.py` 8 个测试：
-
-| 测试 | 验证点 |
-|------|--------|
-| `test_orchestrator_registers_default_plugins` | PM 自动注册 example_separator / example_analyzer |
-| `test_orchestrator_lists_plugin_metadata` | 下拉列表 API 返回 metadata |
-| `test_callback_emits_to_bus` | progress_callback 推到 EventBus |
-| `test_callback_includes_extra` | extra={track: vocals} 被合并到 payload |
-| `test_emits_started_progress_done` | 完整链路 started → progress×N → done |
-| `test_emits_done_with_stems` | done 事件 payload 含 6 道 stem 名 |
-| `test_unknown_plugin_emits_failed` | 不存在的 plugin → failed 事件 |
-| `test_emits_done_with_chords` | analysis 完成带 4 个 chord |
-
-跑 `pytest tests/unit/test_kernel_orchestration.py -v` 0.4 秒内全部通过。
-
-## 十、迭代路径
-
-| 阶段 | 任务 | 估时 |
-|------|------|------|
-| **MVP (已完成)** | 上面 5 个 Phase 全部完成 | 1.5 天 |
-| **P1-A** | 把 `_example_*` 替换为真 BS-RoFormer plugin（基于 `p1-ac-pm` 的 `model_1`） | 0.5 天 |
-| **P1-B** | 把 Orchestrator 的 `_run` 改为调 `AnalysisEngine.run()` 全流水线 | 0.5 天 |
-| **P1-C** | 切换 `ResourceController_s` 并接 VRAM 配额 | 0.5 天 |
-| **P1-D** | 错误处理：plugin 失败 → kernel.bus emit `*_failed`（已部分做）+ UI 弹错 + reload 上次结果 | 1 天 |
-| **P1-E** | 多进程：plugin 跑在 `multiprocessing.Pool` 里，避免主进程阻塞 | 1 天 |
-
-## 十一、已知坑 & 注意事项
-
-1. **同步上下文创建 task**：`Orchestrator.start_separation()` 在测试或同步模块里调用时会**新开 event loop**。正常情况下应**仅在 async 上下文**调用（FastAPI BackgroundTasks / pytest-asyncio）。如果是 sync 调用，跑完后 task 会被警告 "Task was destroyed but it is pending"。
-2. **plugin.run_async 优先**：`call_plugin_execute_async` 优先调 plugin 自己的 `run_async` 协程。如果只有 `execute`（同步），走 `loop.run_in_executor`。
-3. **测试 timeout**：`_drain_queue_until_terminal` 等到 `separation_done / failed` 之一，最多 2 秒。若测试 flaky，调高 `extra_timeout`。
-4. **EventBus 与 QT / GUI 集成**：MVP 阶段 EventBus 是进程内 Queue。未来 Qt 主线程集成时，把 `bus.emit` 切换到 Qt signal/slot。
-
-## 十二、快速自测
-
-```bash
-# 单元测试
-pytest tests/unit/test_example_plugins.py tests/unit/test_kernel_orchestration.py -v
-
-# 启动服务 + 用 curl 测端到端
-python -m src.ui
-# 浏览器：localhost:8000 → 新建车间 → Tab1 上传 → 切 Tab2 → 选 example_separator → NEXT
-# 观察 sep 进度环丝滑 → 完成后 6 道 wav 列表
-
-# 直接通过 SSE 观察事件
-curl -N http://localhost:8000/api/events
-```
-
----
-
-## 十三、待办（与 [p1-workshop-cache-system.md](p1-workshop-cache-system.md) 不重叠的新增条目）
-
-- [ ] **TODO-PLUGIN-A1**：把 `p1-ac-pm` 的 manifest 扫盘接入 `Kernel.list_*_plugins()`
-- [ ] **TODO-PLUGIN-A2**：切换 `ResourceController_s`（一旦 PM 分支 merge 进来）
-- [ ] **TODO-PLUGIN-A3**：错误处理——plugin 抛异常时 UI 弹模态框而非仅 send `*_failed`
-- [ ] **TODO-PLUGIN-A4**：URL 上传 path 还没接（Tab1 仅本地上传生效；URL 待 `audio/loader.py::load_audio_from_url` 集成）
-- [ ] **TODO-PLUGIN-A5**：stale 检测（输入文件改了 → 旧分析 stale，提示重跑）
-- [ ] **TODO-PLUGIN-A6**：MIDI 导出接 Kernel（`MidiExporter` stub 已有）
-- [ ] **TODO-PLUGIN-A7**：Tab4 6 轨混合 wav 端点（`get_mix_audio()`）
-- [ ] **TODO-PLUGIN-A8**：AudioPlayer 接 Workshop（播放 / 暂停 / seek / 调速 / A-B loop）
-- [ ] **TODO-PLUGIN-A9**：CSS polish（welcome-panel / btn-danger / busy-overlay）
-
-> 上面 9 个等团队协调推进。
+`ci.yml` 覆盖 Ruff correctness 子集 `E9,F63,F7,F82`、排除 slow/network 标记的 pytest 用例，以及 JavaScript Node 测试，不构建桌面安装包或运行 mypy。另有独立 `codeql.yml` 安全分析工作流，其远端结果不属于本地测试结论。随 CI 改动应同步更新本节与 README。

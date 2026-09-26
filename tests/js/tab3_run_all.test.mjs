@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict';
-import fs from 'node:fs';
 import test from 'node:test';
-import vm from 'node:vm';
+import api from '../../src/ui/static/js/api.js?v=20260926p2';
+import { state } from '../../src/ui/static/js/app_state.js?v=20260926p2';
+import { createAnalysisController } from '../../src/ui/static/js/analysis_controller.js?v=20260926p2';
+const initialState = structuredClone(state);
 
 function makeCard(track, plugin) {
     const select = { value: plugin, disabled: false, dataset: { track } };
@@ -21,22 +23,9 @@ function makeCard(track, plugin) {
 function loadAppHarness() {
     const calls = [];
     const cards = [
-        makeCard('piano', 'chord_chordnet_2e1d'),
-        makeCard('guitar', 'chord_chordnet_2e1d'),
+        makeCard('piano', 'chord_ismir2019'),
+        makeCard('guitar', 'chord_ismir2019'),
     ];
-    const source = fs.readFileSync(
-        new URL('../../src/ui/static/js/app.js', import.meta.url),
-        'utf8',
-    )
-        .replace(/^import .*;$/gm, '')
-        .concat(`
-            globalThis.__tab3Test = {
-                state,
-                handleRunAllAnalyses,
-                onAnalysisDone,
-            };
-        `);
-
     const document = {
         body: { appendChild() {} },
         addEventListener() {},
@@ -70,41 +59,21 @@ function loadAppHarness() {
             return null;
         },
     };
-    const context = {
-        console,
-        document,
-        window: {},
-        confirm: () => true,
-        requestAnimationFrame() {},
-        setTimeout,
-        clearTimeout,
-        api: {
-            async analyze(wid, track, plugin) {
-                calls.push({ wid, track, plugin });
-                return { ok: true };
-            },
-        },
-        EventStream: class {
-            on() { return this; }
-            connect() {}
-            setWorkshopId() {}
-        },
-        drawPlayhead() {},
-        setTimeout(callback, delay) {
-            if (delay === 0) return globalThis.setTimeout(callback, delay);
-            return 0;
-        },
-        clearTimeout() {},
+    globalThis.document = document;
+    Object.assign(state, structuredClone(initialState));
+    api.analyze = async (wid, track, plugin) => {
+        calls.push({ wid, track, plugin });
+        return { ok: true };
     };
-    vm.createContext(context);
-    vm.runInContext(source, context);
-    context.__tab3Test.state.currentWid = 'workshop-test';
-    context.__tab3Test.state.selectedTracks = new Set(['piano', 'guitar']);
-    context.__tab3Test.state.analyzerSelections = {
-        piano: 'chord_chordnet_2e1d',
-        guitar: 'chord_chordnet_2e1d',
+    const app = { state, ...createAnalysisController({
+        showToast() {}, updateNavigationControls() {},
+    }) };
+    state.currentWid = 'workshop-test';
+    state.selectedTracks = new Set(['piano', 'guitar']);
+    state.analyzerSelections = {
+        piano: 'chord_ismir2019', guitar: 'chord_ismir2019',
     };
-    return { calls, app: context.__tab3Test };
+    return { calls, app };
 }
 
 test('run all waits for one track to finish before launching the next', async () => {
@@ -119,7 +88,7 @@ test('run all waits for one track to finish before launching the next', async ()
     );
     app.onAnalysisDone({
         track: 'piano',
-        plugin: 'chord_chordnet_2e1d',
+        plugin: 'chord_ismir2019',
         result: { chords: [] },
     });
     await new Promise(resolve => setTimeout(resolve, 0));

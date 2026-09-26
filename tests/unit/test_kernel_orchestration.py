@@ -251,6 +251,7 @@ class TestStartSeparation:
             await orch.start_separation(
                 "wid_stems",
                 bus,
+                plugin_name="example_separator",
                 audio_samples=np.zeros(22050, dtype=np.float32),
                 durations_sec=0.0,
             )

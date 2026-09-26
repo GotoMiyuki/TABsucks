@@ -113,18 +113,27 @@ async def call_plugin_execute_async(
         return plugin.execute(rc, **kwargs)
 
     future = loop.run_in_executor(None, sync_run)
-    if progress_callback is None or bool(getattr(plugin, "reports_progress", False)):
-        return await future
+    try:
+        if progress_callback is None or bool(getattr(plugin, "reports_progress", False)):
+            return await asyncio.shield(future)
 
-    heartbeat_interval = max(float(progress_interval_sec), 0.05)
-    while not future.done():
-        done, _ = await asyncio.wait({future}, timeout=heartbeat_interval)
-        if done:
-            break
-        if last_progress < 0.95:
-            emit_progress(min(0.95, last_progress + 0.02))
+        heartbeat_interval = max(float(progress_interval_sec), 0.05)
+        while not future.done():
+            done, _ = await asyncio.wait({future}, timeout=heartbeat_interval)
+            if done:
+                break
+            if last_progress < 0.95:
+                emit_progress(min(0.95, last_progress + 0.02))
 
-    return await future
+        return await asyncio.shield(future)
+    except asyncio.CancelledError:
+        # A thread running a synchronous model cannot be stopped by Task.cancel().
+        # Keep the workshop lock and GPU permit until that thread has exited.
+        try:
+            await asyncio.shield(future)
+        except Exception:  # noqa: BLE001
+            pass
+        raise
 
 
 class Orchestrator:
@@ -136,9 +145,9 @@ class Orchestrator:
     )
 
     SEPARATOR_ALIASES: dict[str, str] = {
-        "BS-RoFormer": "example_separator",
-        "BS-RoFormer-SW": "example_separator",
-        "BS-Roformer-SW": "example_separator",
+        "BS-RoFormer": "separation_bs_roformer",
+        "BS-RoFormer-SW": "separation_bs_roformer",
+        "BS-Roformer-SW": "separation_bs_roformer",
         "BS-Roformer-SW.ckpt": "separation_bs_roformer",
         "BS-Roformer-SW.yaml": "separation_bs_roformer",
     }
@@ -270,12 +279,14 @@ class Orchestrator:
         wid: str,
         bus,
         *,
-        plugin_name: str = "example_separator",
+        plugin_name: str = "separation_bs_roformer",
         audio_samples=None,
         sample_rate: int = 22050,
         compute_device: str = "gpu",
         progress_event: str = "separation_progress",
         durations_sec: float = 3.0,
+        emit_lifecycle: bool = True,
+        task_id: str | None = None,
     ) -> asyncio.Task:
         """Start a separation plugin task and emit lifecycle/progress events."""
         import numpy as np
@@ -291,7 +302,7 @@ class Orchestrator:
         async def _run() -> dict[str, Any]:
             async with workshop_lock:
                 if input_samples is not None:
-                    context.rc.set_buffer("raw", input_samples)
+                    context.rc.set_audio_buffer("raw", input_samples, int(sample_rate))
                     context.rc.set_metadata("sample_rate", int(sample_rate))
 
                 resolved_plugin = self._resolve_separator_name(plugin_name, context.pm)
@@ -306,7 +317,8 @@ class Orchestrator:
                         context,
                     )
                 except PluginManagerError as error:
-                    bus.emit(
+                    if emit_lifecycle:
+                        bus.emit(
                         wid,
                         "separation_failed",
                         {
@@ -314,10 +326,11 @@ class Orchestrator:
                             "requested_device": requested_device,
                             "error": str(error),
                         },
-                    )
+                        )
                     return {"status": "failed", "error": str(error)}
 
-                bus.emit(
+                if emit_lifecycle:
+                    bus.emit(
                     wid,
                     "separation_started",
                     {
@@ -325,8 +338,11 @@ class Orchestrator:
                         "requested_device": requested_device,
                         "effective_device": effective_device,
                     },
+                    )
+                cb = make_progress_callback(
+                    bus, wid, progress_event,
+                    extra={"task_id": task_id, "plugin": resolved_plugin} if task_id else None,
                 )
-                cb = make_progress_callback(bus, wid, progress_event)
                 emit_progress_event(
                     bus,
                     wid,
@@ -334,6 +350,7 @@ class Orchestrator:
                     0.01,
                     plugin=resolved_plugin,
                     stage="loading_plugin",
+                    task_id=task_id,
                 )
 
                 async def execute_plugin() -> dict[str, Any]:
@@ -344,6 +361,7 @@ class Orchestrator:
                         0.05,
                         plugin=resolved_plugin,
                         stage="running_plugin",
+                        task_id=task_id,
                     )
                     return await call_plugin_execute_async(
                         plugin,
@@ -367,6 +385,7 @@ class Orchestrator:
                             0.02,
                             plugin=resolved_plugin,
                             stage="waiting_for_gpu",
+                            task_id=task_id,
                         )
                         async with self._gpu_semaphore:
                             emit_progress_event(
@@ -376,6 +395,7 @@ class Orchestrator:
                                 0.03,
                                 plugin=resolved_plugin,
                                 stage="preparing_vram",
+                                task_id=task_id,
                             )
                             vram = context.pm.prepare_vram(resolved_plugin)
                             if not vram.get("ready", False):
@@ -396,7 +416,8 @@ class Orchestrator:
                         if isinstance(result, dict)
                         else []
                     )
-                    bus.emit(
+                    if emit_lifecycle:
+                        bus.emit(
                         wid,
                         "separation_done",
                         {
@@ -405,10 +426,11 @@ class Orchestrator:
                             "requested_device": requested_device,
                             "effective_device": effective_device,
                         },
-                    )
+                        )
                     return result
                 except Exception as e:  # noqa: BLE001
-                    bus.emit(
+                    if emit_lifecycle:
+                        bus.emit(
                         wid,
                         "separation_failed",
                         {
@@ -417,7 +439,7 @@ class Orchestrator:
                             "effective_device": effective_device,
                             "error": str(e),
                         },
-                    )
+                        )
                     return {"status": "failed", "error": str(e)}
                 finally:
                     if vram_reserved:
@@ -472,6 +494,8 @@ class Orchestrator:
         progress_event: str = "analysis_progress",
         durations_sec: float = 1.5,
         emit_done_event: bool = True,
+        emit_lifecycle: bool = True,
+        task_id: str | None = None,
     ) -> asyncio.Task:
         """Start an analyzer plugin task and emit lifecycle/progress events."""
         context = self.get_context(wid)
@@ -479,35 +503,41 @@ class Orchestrator:
 
         async def _run() -> dict[str, Any]:
             async with workshop_lock:
-                bus.emit(
-                    wid,
-                    "analysis_started",
-                    {"plugin": plugin_name, "track": stem_name},
-                )
+                if emit_lifecycle:
+                    bus.emit(
+                        wid, "analysis_started",
+                        {"plugin": plugin_name, "track": stem_name},
+                    )
                 cb = make_progress_callback(
                     bus,
                     wid,
                     progress_event,
-                    extra={"track": stem_name},
+                    extra={
+                        "track": stem_name,
+                        "plugin": plugin_name,
+                        **({"task_id": task_id} if task_id else {}),
+                    },
                 )
 
                 try:
                     plugin = self._ensure_plugin(plugin_name, context.pm)
                 except PluginManagerError as e:
-                    bus.emit(
+                    if emit_lifecycle:
+                        bus.emit(
                         wid,
                         "analysis_failed",
                         {"plugin": plugin_name, "track": stem_name, "error": str(e)},
-                    )
+                        )
                     return {"status": "failed", "error": str(e)}
 
                 if plugin is None:
                     message = f"plugin not found: {plugin_name}"
-                    bus.emit(
+                    if emit_lifecycle:
+                        bus.emit(
                         wid,
                         "analysis_failed",
                         {"plugin": plugin_name, "track": stem_name, "error": message},
-                    )
+                        )
                     return {"status": "failed", "error": message}
 
                 async def execute_plugin() -> dict[str, Any]:
@@ -536,6 +566,7 @@ class Orchestrator:
                             plugin=plugin_name,
                             track=stem_name,
                             stage="waiting_for_gpu",
+                            task_id=task_id,
                         )
                         async with self._gpu_semaphore:
                             vram = context.pm.prepare_vram(plugin_name)
@@ -566,11 +597,12 @@ class Orchestrator:
                         )
                     return result
                 except Exception as e:  # noqa: BLE001
-                    bus.emit(
+                    if emit_lifecycle:
+                        bus.emit(
                         wid,
                         "analysis_failed",
                         {"plugin": plugin_name, "track": stem_name, "error": str(e)},
-                    )
+                        )
                     return {"status": "failed", "error": str(e)}
                 finally:
                     if vram_reserved:

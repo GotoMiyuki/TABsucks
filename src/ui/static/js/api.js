@@ -53,6 +53,20 @@ const api = {
         return this._fetchJSON(`${this._baseURL}/workshops/${wid}`);
     },
 
+    async listWorkshopTasks(wid) {
+        return this._fetchJSON(`${this._baseURL}/workshops/${wid}/tasks`);
+    },
+
+    async getTask(taskId) {
+        return this._fetchJSON(`${this._baseURL}/tasks/${taskId}`);
+    },
+
+    async cancelTask(taskId) {
+        return this._fetchJSON(`${this._baseURL}/tasks/${taskId}/cancel`, {
+            method: 'POST',
+        });
+    },
+
     async updateSelectedTracks(wid, tracks) {
         return this._fetchJSON(
             `${this._baseURL}/workshops/${wid}/selected-tracks`,
@@ -142,7 +156,7 @@ const api = {
         });
     },
 
-    async separate(wid, model = 'BS-RoFormer-SW', device = 'gpu') {
+    async separate(wid, model = 'separation_bs_roformer', device = 'gpu') {
         return this._fetchJSON(`${this._baseURL}/workshops/${wid}/separate`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },

@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>TABsucks</title>
-    <link rel="stylesheet" href="/static/css/style.css">
+    <link rel="stylesheet" href="/static/css/style.css?v=20260926p2">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
 </head>
@@ -87,6 +87,7 @@
                                 <option value="">— 加载中… —</option>
                             </select>
                             <button id="btn-start-sep" type="button" class="btn-pill-sm">开始分离</button>
+                            <button id="btn-cancel-sep" type="button" class="btn-pill-sm hidden">取消分离</button>
                             <div class="sep-ring-wrap hidden" id="sep-ring-wrap-2">
                                 <svg class="sep-ring" viewBox="0 0 44 44">
                                     <circle class="sep-ring-bg" cx="22" cy="22" r="18" />
@@ -125,6 +126,7 @@
                         </div>
                         <div id="analysis-config-list" class="analysis-config-list"></div>
                         <button id="btn-run-all" class="btn-pill btn-run-all">run all selected</button>
+                        <button id="btn-cancel-analysis" class="btn-pill hidden">取消当前分析</button>
                     </div>
                 </section>
 
@@ -169,6 +171,6 @@
         </main>
     </div>
 
-    <script type="module" src="/static/js/app.js?v=20260716g"></script>
+    <script type="module" src="/static/js/app.js?v=20260926p2"></script>
 </body>
 </html>

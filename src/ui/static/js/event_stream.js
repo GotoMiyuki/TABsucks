@@ -1,6 +1,6 @@
 /** SSE 全局事件流封装，按当前 active workshop 在前端路由。 */
 
-import api from './api.js?v=20260716g';
+import api from './api.js?v=20260926p2';
 
 export default class EventStream {
     constructor() {

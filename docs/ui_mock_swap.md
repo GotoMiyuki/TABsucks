@@ -1,4 +1,6 @@
-# UI Mock → 真实后端替换清单
+# 历史方案：UI Mock 替换计划
+
+> 本文记录 UI 从 mock 走向真实 API 的阶段性方案，部分内容已被后续实现取代，示例插件名与流程可能过时。它不定义当前 API 或插件行为；请参阅 [当前架构](架构设计.md)、[HTTP API](HTTP_API.md) 和 [插件编排](plugin_orchestration.md)。
 
 演示阶段所有后端操作走 Mock。以下是替换为真实实现时需要改动的**精确位置**。
 
@@ -57,7 +59,7 @@ async def _run_real_analysis(wid, track):
     pm = PluginManager(rc)
     # 注册需要的插件...
     engine = AnalysisEngine(rc, pm)
-    result = await asyncio.to_thread(engine.run_single, track, "chord_chordnet_2e1d")
+    result = await asyncio.to_thread(engine.run_single, track, "chord_ismir2019")
     bus.emit(WorkshopEvent(wid, "analysis_done", {"track": track, "result": result}))
 ```
 

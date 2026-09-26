@@ -3,7 +3,12 @@
 > 给 UI 团队对接使用的接口说明。Base URL: `http://127.0.0.1:8000`。
 > 后端：`src/kernel/kernel.py::Kernel` + `src/ui/server.py::make_app`。
 >
-> **所有响应均为 JSON**，错误统一格式：`{"detail": {"error": "<msg>"}}` + 适当 HTTP status。
+> 业务响应通常为 JSON；音频/MIDI 返回文件，SSE 返回事件流。业务错误通常为 `{"detail": {"error": "<msg>"}}`，框架参数校验使用 FastAPI 的 422 格式。
+>
+> 当前前端为静态 HTML/JavaScript，通过 FastAPI HTTP API 与 SSE 事件流通信。分离默认插件为
+> `separation_bs_roformer`；`BS-RoFormer` 等旧显示名称也映射到该真实插件。`example_separator`
+> 仅用于明确选择的开发示例。manifest 可发现不代表本机依赖、权重和硬件已经就绪；执行失败会发出
+> `separation_failed` 事件并携带原因。
 
 ---
 
@@ -56,11 +61,14 @@
 
 车间完整 state.json（dict 形式）。
 
+根字段 `SchemaVersion` 当前为 1；旧文件启动时迁移，未来版本拒绝加载并保留原文件。详细规则见 [状态版本说明](implementation_status.md#状态版本与恢复规则)。
+
 **响应 200**
 
 ```json
 {
   "WorkshopName": "MySong",
+  "SchemaVersion": 1,
   "LastTab": "Tab1",
   "TabState": {
     "Tab1": {"RawAudioFilePath": "raw_audio/song.mp3"},
@@ -120,6 +128,8 @@
 
 **响应 200**: `{"ok": true}`
 
+若车间仍有任务，返回 **202**：`{"ok": true, "operation_id": "...", "status": "running"}`。此时尚未删除；轮询 `GET /api/tasks/{operation_id}` 至 `done` 后才算完成。关闭接口同理。提交中的任务不可取消，关闭会等待提交结束。
+
 **响应 404**: 不存在或已删除。
 
 ### POST `/api/workshops/{wid}/close`
@@ -131,6 +141,8 @@
 - 若 `wid` 是当前 active，则 `active_id` 变 None → 欢迎页
 
 **响应 200**: `{"ok": true, "active_id": null | "..."}`
+
+有在途任务时返回 **202** 和 `operation_id`，任务取消/排空后才释放运行时。相同车间关闭或删除期间拒绝新任务。
 
 ### POST `/api/workshops/{wid}/switch`
 
@@ -159,13 +171,15 @@
 ```json
 {
   "ok": true,
-  "filename": "song.mp3",          // 落盘后的文件名
+  "filename": "<task_id>_song.mp3", // 防止覆盖旧输入
   "name": "song",                  // 自动命名（仅当原 name = "New Workshop"）
-  "rel_path": "raw_audio/song.mp3"  // state.json 里的相对路径
+  "rel_path": "raw_audio/<task_id>_song.mp3" // state.json 里的相对路径
 }
 ```
 
 **自动命名规则**：仅当 `WorkshopName == "New Workshop"` 时，用 `Path(filename).stem` 重命名。
+
+上传按 1 MiB 分块写临时文件，默认上限 512 MiB（`TABSUCKS_MAX_UPLOAD_BYTES`）。URL 导入在工作线程下载和复制；两者与分离/分析在同一车间互斥。冲突返回 409。音频解码前另按 `TABSUCKS_AUDIO_MEMORY_BUDGET_MB` 检查估算内存，默认 1024 MiB。
 
 ---
 
@@ -175,7 +189,7 @@
 
 **Body**: `{"model": "separation_bs_roformer"}`
 
-**响应 200**: `{"ok": true, "task": "separation_bs_roformer"}`
+**响应 200**: `{"ok": true, "task": "separation_bs_roformer", "task_id": "...", "status": "running"}`；相同在途请求返回同一 `task_id`，冲突请求返回 409。
 
 **触发事件（通过 `/api/events` 接收）**：
 - `separation_started`
@@ -191,10 +205,14 @@
 
 **Body**: `{"track": "guitar", "plugin": "chord_ismir2019"}`
 
-**响应 200**: `{"ok": true, "task": "chord_ismir2019"}`
+**响应 200**: `{"ok": true, "task": "chord_ismir2019", "task_id": "...", "status": "running"}`；相同在途请求复用任务，冲突请求返回 409。
 
 **触发事件**：`analysis_started` → `analysis_progress` → `analysis_done`。
 完成事件包含 `track`、`plugin`、`task_id`、`result_path` 和规范化后的 `result`。
+
+### GET `/api/tasks/{task_id}` · GET `/api/workshops/{wid}/tasks` · POST `/api/tasks/{task_id}/cancel`
+
+任务查询返回 `task_id`、`workshop_id`、`kind`、`plugin`、`track`、`status`、`stage`、`error` 与时间戳；车间列表返回同结构数组。状态为 `queued/running/committing/cancelling/done/failed/cancelled/interrupted`。取消接口返回当前任务结构；在 `committing` 阶段或关闭/删除操作上请求取消返回 409。同步模型不能被强杀，`cancelling` 可能持续至模型线程退出。任务记录只在当前服务进程内可查询，重启后业务状态中的在途任务显示为 `interrupted`。
 
 ### GET `/api/workshops/{wid}/analysis-results`
 
@@ -210,7 +228,7 @@
     "guitar": {"chords": [{"start": 0.0, "end": 1.0, "chord": "C"}]}
   },
   "result_plugins": {
-    "guitar": "chord_chordnet_2e1d"
+    "guitar": "chord_ismir2019"
   }
 }
 ```
@@ -220,8 +238,9 @@
 ### GET `/api/workshops/{wid}/visualization?track={name}`
 
 获取 Tab4 可视化 JSON。`track=full` 时波形来自原始音频；指定音轨时波形来自对应的
-分离 stem。节拍与和弦优先读取该音轨最新完成的 Tab3 分析结果；没有真实和弦结果时
-`chords` 返回空数组，不生成模拟分析结果。
+分离 stem。节拍与和弦读取该音轨最新完成的 Tab3 分析结果；没有结果时 `beats`、`chords` 返回空数组。
+音频缺失或解码失败时，返回空 `peaks`、零时长以及 `metadata.hasAudioData=false`，不生成随机波形。
+`metadata.hasBeatData`、`hasChordData` 表示是否取得相应分析数据。节拍位置目前由节奏结果中的 BPM 推算，并非逐拍检测输出。
 
 **响应 200**
 

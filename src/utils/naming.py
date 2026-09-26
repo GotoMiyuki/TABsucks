@@ -21,7 +21,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from src.kernel.core.workshop import DEFAULT_WORKSHOP_NAME
+from src.kernel.core.workshop_state import DEFAULT_WORKSHOP_NAME
 
 #: 标题清理规则：常见音乐平台附带的标签都拿掉（支持半角+全角括号）。
 #: 拆成两个分开的正则分别处理半角与全角，避免字符类内部 escape 顺序歧义。

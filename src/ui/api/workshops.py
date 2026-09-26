@@ -8,10 +8,11 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 
-from src.kernel.core.workshop import MusicWorkshop, ValidationError
+from src.kernel.core.music_workshop import MusicWorkshop
+from src.kernel.core.workshop_state import ValidationError
 
 router = APIRouter()
 
@@ -174,9 +175,10 @@ def update_current_tab(
 
 
 @router.delete("/workshops/{wid}")
-def delete_workshop(
+async def delete_workshop(
     wid: str,
     request: Request,
+    response: Response,
     keep_state: bool = False,
 ) -> dict[str, Any]:
     """永久删除车间（内存 + 磁盘）。
@@ -186,13 +188,26 @@ def delete_workshop(
     kernel = _kernel(request)
     if kernel.manager is None:
         _err(503, "Kernel 未 boot")
+    existing_operation = kernel.tasks.operation(wid)
+    if existing_operation is not None:
+        response.status_code = 202
+        return {"ok": True, "operation_id": existing_operation.id, "status": existing_operation.status}
+    if kernel.tasks.active(wid) is not None:
+        try:
+            operation = kernel.schedule_workshop_close(
+                wid, delete=True, keep_state=keep_state,
+            )
+        except KeyError:
+            _err(404, f"车间 {wid} 不存在或已被删除")
+        response.status_code = 202
+        return {"ok": True, "operation_id": operation.id, "status": operation.status}
     if not kernel.delete_workshop(wid, keep_state=keep_state):
         _err(404, f"车间 {wid} 不存在或已被删除")
     return {"ok": True}
 
 
 @router.post("/workshops/{wid}/close")
-def close_workshop(wid: str, request: Request) -> dict[str, Any]:
+async def close_workshop(wid: str, request: Request, response: Response) -> dict[str, Any]:
     """关闭车间 = deactivate。
 
     * MusicWorkshop 实例仍留内存（每个 < 2KB，可忽略）
@@ -202,6 +217,17 @@ def close_workshop(wid: str, request: Request) -> dict[str, Any]:
     kernel = _kernel(request)
     if kernel.manager is None:
         _err(503, "Kernel 未 boot")
+    existing_operation = kernel.tasks.operation(wid)
+    if existing_operation is not None:
+        response.status_code = 202
+        return {"ok": True, "operation_id": existing_operation.id, "status": existing_operation.status}
+    if kernel.tasks.active(wid) is not None:
+        try:
+            operation = kernel.schedule_workshop_close(wid)
+        except KeyError:
+            _err(404, f"车间 {wid} 不存在")
+        response.status_code = 202
+        return {"ok": True, "operation_id": operation.id, "status": operation.status}
     if not kernel.close_workshop(wid):
         _err(404, f"车间 {wid} 不存在")
     return {"ok": True, "active_id": kernel.manager.active_id()}

@@ -29,6 +29,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.responses import FileResponse
@@ -39,6 +40,7 @@ from src.ui.api.analysis import router as analysis_router
 from src.ui.api.events import router as events_router
 from src.ui.api.plugins import router as plugins_router
 from src.ui.api.workshops import router as workshops_router
+from src.ui.api.tasks import router as tasks_router
 
 # 与本文件同目录的 static
 STATIC_DIR: Path = Path(__file__).parent / "static"
@@ -61,7 +63,15 @@ def make_app(kernel: Kernel) -> FastAPI:
     Returns:
         :py:class:`fastapi.FastAPI` 应用。
     """
-    app = FastAPI(title="TABsucks", version="0.2.0")
+    @asynccontextmanager
+    async def lifespan(_app: FastAPI):
+        try:
+            yield
+        finally:
+            if hasattr(kernel, "shutdown_async"):
+                await kernel.shutdown_async()
+
+    app = FastAPI(title="TABsucks", version="0.2.0", lifespan=lifespan)
     app.state.kernel = kernel
 
     # 静态资源
@@ -76,6 +86,7 @@ def make_app(kernel: Kernel) -> FastAPI:
     app.include_router(events_router, prefix="/api", tags=["events"])
     app.include_router(analysis_router, prefix="/api", tags=["analysis"])
     app.include_router(plugins_router, prefix="/api", tags=["plugins"])
+    app.include_router(tasks_router, prefix="/api", tags=["tasks"])
 
     @app.get("/", include_in_schema=False)
     async def index() -> FileResponse:

@@ -50,6 +50,26 @@ class ResourceController:
         with self._lock:
             self._buffers[name] = data
 
+    def set_audio_buffer(self, name: str, data: np.ndarray, sample_rate: int) -> None:
+        """Store one audio buffer together with its own sample rate."""
+        from src.audio.contracts import as_audio
+
+        audio = as_audio(data, sample_rate)
+        with self._lock:
+            self._buffers[name] = audio
+            self._metadata[f"audio_sample_rate:{name}"] = sample_rate
+
+    def get_audio_buffer(self, name: str) -> tuple[np.ndarray, int]:
+        """Read a canonical audio buffer and its matching sample rate."""
+        with self._lock:
+            audio = self.get_buffer(name)
+            rate = self._metadata.get(f"audio_sample_rate:{name}")
+            if rate is None:
+                rate = self._metadata.get("sample_rate")
+            if not isinstance(rate, int) or rate <= 0:
+                raise ResourceControllerError(f"Sample rate is missing for audio buffer '{name}'")
+            return audio, rate
+
     def set_buffers_batch(self, mapping: dict[str, np.ndarray]) -> None:
         """Write several buffers while holding one lock."""
         with self._lock:
