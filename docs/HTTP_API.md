@@ -26,6 +26,28 @@
 
 ---
 
+## 分析插件资源状态
+
+### GET `/api/plugins/analyzers`
+
+返回 manifest 中的分析插件。声明了资源要求的插件额外返回 `assets_ready` 和
+`unavailable_reason`；未声明资源要求的旧插件保持原有字段。
+
+BTC-SL 会检查所需的 ChordMini 推理源码，以及至少一份默认 BTC 权重。
+`assets_ready` 表示这些文件存在，不代表已经执行模型推理。硬件、Python 包和模型加载错误
+仍分别由兼容性检查和任务执行反馈。
+
+```json
+{
+  "name": "chord_btc_sl",
+  "assets_ready": true,
+  "unavailable_reason": null
+}
+```
+
+资源缺失时 `assets_ready` 为 `false`，原因包含缺失项及子模块初始化提示。
+前端保留该选项并标为“资源未就绪”，停止选择和排队，优先选择其他已就绪的适配模型。
+
 ## 车间管理
 
 ### GET `/api/workshops`

@@ -101,3 +101,29 @@ class TestPluginManager:
 
         assert plugin is not None
         assert plugin.name == "separation_bs_roformer"
+
+    def test_missing_assets_block_compatibility_and_explain_menu_status(self, tmp_path):
+        self.pm._manifests = {"chord_test": {
+            "name": "chord_test", "_manifest_dir": str(tmp_path),
+            "requirements": {
+                "required_files": ["model.py"],
+                "required_file_groups": [["teacher.pt", "trained.pth"]],
+                "asset_setup_hint": "Initialize the submodule",
+            },
+        }}
+        result = self.pm.check_compatibility("chord_test")
+        assert result["compatible"] is False
+        assert result["assets_ready"] is False
+        assert any("model.py" in error for error in result["errors"])
+        entry = self.pm.get_available_plugins()[0]
+        assert entry["assets_ready"] is False
+        assert "Initialize the submodule" in entry["unavailable_reason"]
+
+        (tmp_path / "model.py").write_text("", encoding="utf-8")
+        (tmp_path / "trained.pth").write_bytes(b"checkpoint")
+        result = self.pm.check_compatibility("chord_test")
+        assert result["compatible"] is True
+        assert result["assets_ready"] is True
+        entry = self.pm.get_available_plugins()[0]
+        assert entry["assets_ready"] is True
+        assert entry["unavailable_reason"] is None

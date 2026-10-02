@@ -12,7 +12,20 @@
       "requirements": {
         "gpu_memory_mb": 2048,
         "ram_mb_min": 1024,
-        "python_packages": ["torch", "librosa", "numpy"]
+        "python_packages": ["torch", "librosa", "numpy"],
+        "required_files": [
+          "external/chordmini/src/models/common/config.py",
+          "external/chordmini/src/models/common/transformer_modules.py",
+          "external/chordmini/src/models/common/temporal_smoothing.py",
+          "external/chordmini/src/models/btc_model.py",
+          "external/chordmini/src/evaluation/utils/common.py",
+          "external/chordmini/src/evaluation/utils/inference.py"
+        ],
+        "required_file_groups": [[
+          "external/chordmini/checkpoints/btc_model_large_voca.pt",
+          "external/chordmini/checkpoints/btc_model_best.pth"
+        ]],
+        "asset_setup_hint": "请在项目目录执行 git submodule update --init -- src/plugins/chord/external/chordmini"
       },
       "phase": "post-separation"
     },

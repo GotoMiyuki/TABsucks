@@ -85,26 +85,11 @@ class TestBTCSLChordPluginExecute:
 
     @pytest.fixture()
     def plugin_with_mock_model(self, monkeypatch):
-        from src.plugins.chord.btc_sl import _setup_chordmini_imports
-        _setup_chordmini_imports()
-
-        try:
-            from src.models.btc_model import BTC_model
-            from src.models.common.config import ModelConfig
-        except ModuleNotFoundError:
-            pytest.skip("ChordMini git submodule is not initialized")
-
-        config = ModelConfig()
-        mock_model = BTC_model(config=config)
-        mock_model.eval()
-
         from src.plugins.chord.btc_sl import BTCSLChordPlugin
         plugin = BTCSLChordPlugin()
 
         def mock_init(self, rc, checkpoint_path=None):
-            device = rc.get_current_device() if hasattr(rc, "get_current_device") else "cpu"
-            model = mock_model.to(device)
-            return model, 0.0, 1.0
+            return object(), 0.0, 1.0
 
         def mock_cqt(audio, sr):
             num_frames = max(1, len(audio) // 2048)

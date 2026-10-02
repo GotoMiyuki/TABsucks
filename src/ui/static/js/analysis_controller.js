@@ -111,11 +111,15 @@ export function createAnalysisController({ showToast, updateNavigationControls }
         return _analyzerPlugins;
     }
 
-    function compatibleAnalyzers(track) {
+    function matchingAnalyzers(track) {
         return _analyzerPlugins.filter(plugin =>
             Array.isArray(plugin.input_stems)
             && plugin.input_stems.includes(track)
         );
+    }
+
+    function compatibleAnalyzers(track) {
+        return matchingAnalyzers(track).filter(plugin => plugin.assets_ready !== false);
     }
 
     function initializeAnalyzerSelections() {
@@ -128,6 +132,7 @@ export function createAnalysisController({ showToast, updateNavigationControls }
                 ? resultPlugin
                 : compatible[0]?.name;
             if (preferred) state.analyzerSelections[track] = preferred;
+            else delete state.analyzerSelections[track];
         }
     }
 
@@ -169,21 +174,27 @@ export function createAnalysisController({ showToast, updateNavigationControls }
         }
 
         container.innerHTML = tracks.map(track => {
+            const matching = matchingAnalyzers(track);
             const compatible = compatibleAnalyzers(track);
             const selected = state.analyzerSelections[track];
             const selectedIsCompatible = compatible.some(p => p.name === selected);
-            if (!selectedIsCompatible && compatible.length > 0) {
-                state.analyzerSelections[track] = compatible[0].name;
+            if (!selectedIsCompatible) {
+                if (compatible.length > 0) state.analyzerSelections[track] = compatible[0].name;
+                else delete state.analyzerSelections[track];
             }
             const activePlugin = state.analyzerSelections[track];
-            const opts = compatible.map(p =>
-                `<option value="${escapeHTML(p.name)}" ${p.name === activePlugin ? 'selected' : ''}>
-                    ${escapeHTML(p.display_name || p.name)}
+            const opts = matching.map(p =>
+                `<option value="${escapeHTML(p.name)}" ${p.name === activePlugin ? 'selected' : ''} ${p.assets_ready === false ? 'disabled' : ''} title="${escapeHTML(p.unavailable_reason || '')}">
+                    ${escapeHTML(p.display_name || p.name)}${p.assets_ready === false ? '（资源未就绪）' : ''}
                 </option>`
             ).join('');
             const running = state.analysisRunning.has(track);
             const done = isTrackAnalysisComplete(track);
             const unsupported = compatible.length === 0;
+            const unavailableReason = unsupported
+                ? matching.map(p => p.unavailable_reason).filter(Boolean).join('; ')
+                : '';
+            const unsupportedLabel = matching.length > 0 ? '模型资源未就绪' : '无适配模型';
             const queued = state.analysisBatchQueue.some(
                 item => item.track === track
             );
@@ -196,14 +207,14 @@ export function createAnalysisController({ showToast, updateNavigationControls }
                     <span class="track-label">
                         ${TRACK_LABELS[track] || track}
                     </span>
-                    <select class="sel-analyzer" aria-label="${TRACK_LABELS[track]}分析模型" data-track="${track}" ${controlsDisabled ? 'disabled' : ''}>
-                        ${unsupported ? '<option value="">无适配和弦模型</option>' : opts}
+                    <select class="sel-analyzer" aria-label="${TRACK_LABELS[track]}分析模型" data-track="${track}" title="${escapeHTML(unavailableReason)}" ${controlsDisabled ? 'disabled' : ''}>
+                        ${matching.length === 0 ? '<option value="">无适配和弦模型</option>' : opts}
                     </select>
                     <button class="btn-pill-sm btn-run-analysis" data-track="${track}" ${controlsDisabled ? 'disabled' : ''}>
                         ${unsupported ? '不可分析' : (running ? '分析中…' : (queued ? '等待中' : (done ? '重新分析' : '开始分析')))}
                     </button>
-                    <span class="analysis-status ${unsupported ? 'unsupported' : (queued ? 'queued' : statusCls)}">
-                        ${unsupported ? '无适配模型' : (running ? '运行中' : (queued ? '已排队' : (done ? '已完成' : escapeHTML(state.analysisErrors[track] || '尚未分析'))))}
+                    <span class="analysis-status ${unsupported ? 'unsupported' : (queued ? 'queued' : statusCls)}" title="${escapeHTML(unavailableReason)}">
+                        ${unsupported ? unsupportedLabel : (running ? '运行中' : (queued ? '已排队' : (done ? '已完成' : escapeHTML(state.analysisErrors[track] || '尚未分析'))))}
                     </span>
                 </div>`;
         }).join('');

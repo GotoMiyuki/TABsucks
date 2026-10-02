@@ -108,7 +108,7 @@ Windows 发行包采用分层安装：
 项目推荐使用 64 位 Python 3.10 虚拟环境。
 
 ```powershell
-git clone https://github.com/GotoMiyuki/TABsucks.git
+git clone --recurse-submodules https://github.com/GotoMiyuki/TABsucks.git
 cd TABsucks
 
 python -m venv .venv
@@ -120,6 +120,16 @@ python -m pip install -r requirements.txt
 # 启动本地 Web 服务
 python -m src.ui
 ```
+
+已经检出的仓库需要补齐 ChordMini 子模块及其随附的 BTC 权重：
+
+```powershell
+git submodule update --init -- src/plugins/chord/external/chordmini
+```
+
+BTC-SL 使用锁定版本的模型与滑窗推理代码，和 TABsucks 的 Python 包隔离加载。
+源码运行只需项目依赖清单中的推理依赖；无需安装 ChordMini 的整套训练、评估和绘图库。
+分析模型列表会检查 BTC-SL 源码和权重，缺少资源时显示“资源未就绪”并停用该选项。
 
 服务默认监听：
 

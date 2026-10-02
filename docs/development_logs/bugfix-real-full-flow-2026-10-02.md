@@ -2,7 +2,7 @@
 
 本次使用之前失败项目中的原曲，通过正式 HTTP API 重跑了导入、真实 BS-RoFormer 六轨分离、音轨读取、波形、六轨 ISMIR 2019 分析、MIDI 导出和重启恢复。CPU + ISMIR 路径完成，未复现分离死锁；GPU 和 BTC-SL 路径各有明确的环境阻断。已修复两类分离插件错误处理问题。
 
-后续已修正分离阶段和进度提示，并完成本机 GPU 配置与真实整曲验证，详见 [进度与 GPU 修复记录](bugfix-separation-progress-gpu-2026-10-02.md)。本文保留初次排查的基线结果；GPU 环境阻断已解决，BTC-SL 缺失依赖仍待处理。
+后续已修正分离阶段和进度提示，并完成本机 GPU 配置与真实整曲验证，详见 [进度与 GPU 修复记录](bugfix-separation-progress-gpu-2026-10-02.md)。BTC-SL 后续也已恢复并完成真实六轨验证，见 [BTC-SL 修复记录](bugfix-btc-sl-runtime-2026-10-02.md)。本文保留初次排查的基线结果。
 
 测试使用独立 `.workbench-preview-real-debug` 缓存。原项目 `cache/workshop_b209de6ae783450f` 仅作为输入来源，保留原状态。旧项目只保存了 `failed` 状态，没有当时的错误详情，因此不能断言本次发现就是历史失败的唯一原因。
 
