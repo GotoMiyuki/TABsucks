@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import api from '../../src/ui/static/js/api.js?v=20260926p2';
-import { state } from '../../src/ui/static/js/app_state.js?v=20260926p2';
-import { createAnalysisController } from '../../src/ui/static/js/analysis_controller.js?v=20260926p2';
+import api from '../../src/ui/static/js/api.js?v=20261002v1';
+import { state } from '../../src/ui/static/js/app_state.js?v=20261002v1';
+import { createAnalysisController } from '../../src/ui/static/js/analysis_controller.js?v=20261002v1';
 const initialState = structuredClone(state);
 
 function makeCard(track, plugin) {

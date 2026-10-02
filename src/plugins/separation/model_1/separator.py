@@ -21,7 +21,7 @@ from typing import Any
 
 import numpy as np
 import soundfile as sf
-from audio_separator.separator import Separator as AudioSeparator
+from .progress import ProgressAudioSeparator as AudioSeparator, report
 
 from src.kernel.core.resource_controller import ResourceController
 from src.plugins import BasePlugin
@@ -106,6 +106,8 @@ class SeparationPlugin(BasePlugin):
     运行于 separation 阶段，为下游 post-separation 插件（和弦识别等）提供输入。
     """
 
+    reports_progress = True
+
     def __init__(self, model_name: str = "BS-Roformer-SW.ckpt") -> None:
         super().__init__()
         self.model_name = model_name
@@ -139,6 +141,7 @@ class SeparationPlugin(BasePlugin):
         """
         model_name = kwargs.get("model_name", self.model_name)
         compute_device = str(kwargs.get("compute_device", "gpu")).lower()
+        progress_callback = kwargs.get("progress_callback")
         print(f"[{self.name}] Starting 6-stem separation with model: {model_name}")
         print(f"[{self.name}] Compute device: {compute_device}")
 
@@ -158,6 +161,7 @@ class SeparationPlugin(BasePlugin):
             sample_rate,
             model_name,
             compute_device=compute_device,
+            progress_callback=progress_callback,
         )
 
         # 3. 回写各 stem buffer 到 ResourceController
@@ -188,7 +192,7 @@ class SeparationPlugin(BasePlugin):
 
     # ---------- 内部引擎 ----------
 
-    def _init_engine(self, model_name: str, *, compute_device: str = "gpu") -> None:
+    def _init_engine(self, model_name: str, *, compute_device: str = "gpu", progress_callback=None) -> None:
         """
         初始化底层推理引擎。
         只有在真正点击"开始分离"时才会触发，顺便设定好模型缓存和输出路径。
@@ -204,20 +208,24 @@ class SeparationPlugin(BasePlugin):
                 and self._separator_model_name != model_name
             )
         ):
-            self._separator_instance = AudioSeparator(
+            report(progress_callback, "preparing_model", detail=model_name)
+            # Publish the engine only after its model has loaded successfully.
+            # A failed first load must not make a later retry skip load_model().
+            engine = AudioSeparator(
                 model_file_dir=str(_model_directory(model_name)),
                 output_dir=tempfile.gettempdir(), # 分离后的中间文件临时存放在系统的 temp 目录
                 output_format="WAV",              # 保证中间文件无损
+                progress_callback=progress_callback,
             )
             if compute_device == "cpu":
                 import torch
 
-                self._separator_instance.torch_device = torch.device("cpu")
-                self._separator_instance.onnx_execution_provider = [
+                engine.torch_device = torch.device("cpu")
+                engine.onnx_execution_provider = [
                     "CPUExecutionProvider"
                 ]
             elif compute_device == "gpu":
-                engine_device = getattr(self._separator_instance, "torch_device", None)
+                engine_device = getattr(engine, "torch_device", None)
                 if engine_device is None or not str(engine_device).startswith("cuda"):
                     raise SeparatorError(
                         "GPU was requested, but audio-separator did not configure CUDA."
@@ -225,12 +233,17 @@ class SeparationPlugin(BasePlugin):
             else:
                 raise SeparatorError(f"Unsupported compute device: {compute_device}")
             try:
-                # 如果本地没有模型，它会自动从 HuggingFace 下载
-                self._separator_instance.load_model(model_name)
-            except Exception as e:
+                # audio-separator prepares missing weights and configuration.
+                engine.load_model(model_name)
+            except (Exception, SystemExit) as e:
+                # audio-separator can call sys.exit() for a bad checkpoint.
+                # Convert that into a task failure instead of exiting the server.
                 raise SeparatorError(f"模型加载失败: {e}") from e
+            self._separator_instance = engine
             self._separator_device = compute_device
             self._separator_model_name = model_name
+        if hasattr(self._separator_instance, "progress_callback"):
+            self._separator_instance.progress_callback = progress_callback
 
     def _separate(
         self,
@@ -239,12 +252,13 @@ class SeparationPlugin(BasePlugin):
         model_name: str,
         *,
         compute_device: str = "gpu",
+        progress_callback=None,
     ) -> SeparationResult:
         """
         核心分离逻辑：
         内存(NumPy) -> 写入临时文件 -> 模型推理出6个临时文件 -> 读取6个文件回内存(NumPy) -> 清理垃圾
         """
-        self._init_engine(model_name, compute_device=compute_device)
+        self._init_engine(model_name, compute_device=compute_device, progress_callback=progress_callback)
         n_samples = audio.shape[-1]
 
         # 1. 创建一个安全的临时输入文件
@@ -254,10 +268,12 @@ class SeparationPlugin(BasePlugin):
 
         try:
             # soundfile 写入时需要将 shape (channels, samples) 转置为 (samples, channels)
+            report(progress_callback, "preparing_audio")
             sf.write(temp_in_path, audio.T, sr, subtype="FLOAT")
 
             # 2. 调用模型，开始分离！
             # 6 轨模型跑完后，会返回一个包含了 6 个具体文件名的列表
+            report(progress_callback, "separating_audio")
             output_files = self._separator_instance.separate(temp_in_path)
             output_dir = Path(self._separator_instance.output_dir).resolve()
             for filename in output_files:
@@ -269,6 +285,7 @@ class SeparationPlugin(BasePlugin):
             from src.audio.contracts import as_audio
 
             tracks_data: dict[str, np.ndarray] = {}
+            report(progress_callback, "reading_stems", 0, len(output_paths), unit="stems")
 
             # 4. 遍历提取模型吐出来的每个音频文件
             for path in output_paths:
@@ -309,6 +326,7 @@ class SeparationPlugin(BasePlugin):
                 if track_name is None or track_name in tracks_data:
                     raise SeparatorError(f"模型输出轨名未知或重复: {path.name}")
                 tracks_data[track_name] = data
+                report(progress_callback, "reading_stems", len(tracks_data), len(output_paths), unit="stems", detail=track_name)
 
             missing = {"vocals", "drums", "bass", "piano", "guitar", "other"} - tracks_data.keys()
             if missing:
@@ -325,7 +343,7 @@ class SeparationPlugin(BasePlugin):
                 sample_rate=sr,
             )
 
-        except Exception as e:
+        except (Exception, SystemExit) as e:
             raise SeparatorError(f"分离过程出错: {e}") from e
 
         finally:

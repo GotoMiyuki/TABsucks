@@ -29,6 +29,8 @@ class TaskRecord:
     status: str = "queued"
     stage: str = "queued"
     error: str | None = None
+    progress: float | None = None
+    progress_detail: dict[str, Any] = field(default_factory=dict)
     created_at: float = field(default_factory=time.time)
     updated_at: float = field(default_factory=time.time)
     handle: asyncio.Task | None = field(default=None, repr=False)
@@ -43,6 +45,8 @@ class TaskRecord:
             "status": self.status,
             "stage": self.stage,
             "error": self.error,
+            "progress": self.progress,
+            "progress_detail": dict(self.progress_detail),
             "created_at": self.created_at,
             "updated_at": self.updated_at,
         }
@@ -92,9 +96,21 @@ class TaskService:
             if record.status in TERMINAL:
                 return
             record.stage = stage
+            record.progress = None
+            record.progress_detail = {"device": record.progress_detail.get("device")}
             if stage == "committing":
                 record.status = "committing"
             record.updated_at = time.time()
+
+    def report_progress(self, record: TaskRecord, progress: float | None, **details) -> bool:
+        with self._lock:
+            if record.status in TERMINAL or record.status == "cancelling":
+                return False
+            record.stage = details.get("stage", record.stage)
+            record.progress = progress
+            record.progress_detail = {key: value for key, value in details.items() if key != "stage"}
+            record.updated_at = time.time()
+            return True
 
     def finish(self, record: TaskRecord, status: str, error: str | None = None) -> None:
         with self._lock:
@@ -102,6 +118,7 @@ class TaskService:
                 return
             record.status = record.stage = status
             record.error = error
+            record.progress = 1.0 if status == "done" else None
             record.updated_at = time.time()
             if self._active.get(record.workshop_id) == record.id:
                 self._active.pop(record.workshop_id, None)

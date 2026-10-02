@@ -1,176 +1,29 @@
 <!DOCTYPE html>
 <html lang="zh-CN">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>TABsucks</title>
-    <link rel="stylesheet" href="/static/css/style.css?v=20260926p2">
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="color-scheme" content="light dark">
+<title>TABsucks · 音乐工作台</title><link rel="stylesheet" href="/static/css/style.css?v=20261002v1">
 </head>
 <body>
-    <div id="app">
-        <!-- ═══ 侧边栏 ═══ -->
-        <aside id="sidebar">
-            <div class="sidebar-logo">
-                <span class="logo-text">TABsucks</span>
-            </div>
-            <!-- 欢迎页：当 active === null 时显示 -->
-            <section id="welcome-panel" class="welcome-panel">
-                <h2 class="welcome-title">欢迎</h2>
-                <p class="welcome-hint">从左侧选择车间，或新建一个开始分析。</p>
-                <button id="btn-welcome-new" type="button" class="btn-pill">新建车间</button>
-            </section>
-            <div id="workshop-list" class="workshop-list"></div>
-            <button id="btn-new-workshop" type="button" class="btn-pill">new workshop</button>
-            <!-- 永久删除按钮（操作危险，二次确认） -->
-            <button id="btn-delete-active" type="button" class="btn-pill btn-danger hidden">永久删除当前车间</button>
-        </aside>
-
-        <!-- ═══ 主区域 ═══ -->
-        <main id="main">
-            <!-- 顶部 Tab 指示器 -->
-            <nav id="step-bar">
-                <div class="step-indicator active" data-tab="1">Tab1 音频输入</div>
-                <div class="step-indicator" data-tab="2">Tab2 音轨分离</div>
-                <div class="step-indicator" data-tab="3">Tab3 音轨分析</div>
-                <div class="step-indicator" data-tab="4">Tab4 播放导出</div>
-            </nav>
-
-            <!-- Tab 内容区 -->
-            <div id="step-content">
-                <!-- ─── Tab1: 音频输入 ─── -->
-                <section id="step-1" class="step-panel active">
-                    <div class="step-center">
-                        <div class="upload-row">
-                            <div class="sep-ring-wrap hidden" id="sep-ring-wrap">
-                                <svg class="sep-ring" viewBox="0 0 44 44">
-                                    <circle class="sep-ring-bg" cx="22" cy="22" r="18" />
-                                    <circle class="sep-ring-fg" id="sep-ring-fg" cx="22" cy="22" r="18" />
-                                </svg>
-                                <span class="sep-ring-label" id="sep-ring-label">0%</span>
-                            </div>
-                            <button id="btn-upload-file" class="btn-rect">
-                                <span>Upload audio file</span>
-                                <input type="file" id="file-input" accept="audio/*,video/*" hidden>
-                            </button>
-                            <button id="btn-upload-url" class="btn-rect">
-                                <span>Fetch from URL</span>
-                            </button>
-                        </div>
-                        <div id="input-url-wrap" class="input-url-wrap hidden">
-                            <input type="text" id="input-url" class="url-input" placeholder="paste audio or video URL">
-                            <button id="btn-fetch" class="btn-pill-sm">fetch</button>
-                        </div>
-                        <div id="audio-info" class="audio-info hidden">
-                            <span class="info-tag" id="info-filename">-</span>
-                            <span class="info-tag" id="info-duration">-</span>
-                            <span class="info-tag" id="info-samplerate">-</span>
-                        </div>
-                        <!-- 下载进度条（URL 上传时显示） -->
-                        <div id="dl-progress-wrap" class="dl-progress-wrap hidden">
-                            <progress id="dl-progress-bar" value="0" max="100" class="dl-progress"></progress>
-                            <span id="dl-progress-text" class="dl-progress-text">0%</span>
-                        </div>
-                        <button id="btn-continue-tab2" type="button" class="btn-pill hidden" style="max-width:200px">
-                            继续 → Tab2
-                        </button>
-                    </div>
-                </section>
-
-                <!-- ─── Tab2: 音轨分离 + 多选 ─── -->
-                <section id="step-2" class="step-panel">
-                    <div class="tab-workflow-panel">
-                        <div class="sep-model-row">
-                            <label class="sep-model-label">分离模型</label>
-                            <select id="sel-separator" class="sel-separator" title="选择分离模型">
-                                <option value="">— 加载中… —</option>
-                            </select>
-                            <button id="btn-start-sep" type="button" class="btn-pill-sm">开始分离</button>
-                            <button id="btn-cancel-sep" type="button" class="btn-pill-sm hidden">取消分离</button>
-                            <div class="sep-ring-wrap hidden" id="sep-ring-wrap-2">
-                                <svg class="sep-ring" viewBox="0 0 44 44">
-                                    <circle class="sep-ring-bg" cx="22" cy="22" r="18" />
-                                    <circle class="sep-ring-fg" id="sep-ring-fg-2" cx="22" cy="22" r="18" />
-                                </svg>
-                                <span class="sep-ring-label" id="sep-ring-label-2">0%</span>
-                            </div>
-                        </div>
-                        <div class="sep-device-row" role="radiogroup" aria-label="分离计算设备">
-                            <span class="sep-device-label">运行设备</span>
-                            <label class="sep-device-option">
-                                <input type="radio" name="sep-device" value="gpu">
-                                <span>GPU 加速</span>
-                            </label>
-                            <label class="sep-device-option">
-                                <input type="radio" name="sep-device" value="cpu" checked>
-                                <span>CPU</span>
-                            </label>
-                        </div>
-                        <div class="section-heading">
-                            <span>选择进入 Tab3 的音轨</span>
-                            <span id="selected-track-count" class="selection-count">0 / 6</span>
-                        </div>
-                        <div id="stem-selection-list" class="stem-selection-list">
-                            <p class="empty-msg compact">完成分离后可选择音轨</p>
-                        </div>
-                    </div>
-                </section>
-
-                <!-- ─── Tab3: 已选音轨分析 ─── -->
-                <section id="step-3" class="step-panel">
-                    <div class="tab-workflow-panel">
-                        <div class="section-heading">
-                            <span>为已选音轨配置和弦分析模型</span>
-                            <span id="analysis-complete-count" class="selection-count">0 / 0</span>
-                        </div>
-                        <div id="analysis-config-list" class="analysis-config-list"></div>
-                        <button id="btn-run-all" class="btn-pill btn-run-all">run all selected</button>
-                        <button id="btn-cancel-analysis" class="btn-pill hidden">取消当前分析</button>
-                    </div>
-                </section>
-
-                <!-- ─── Tab4: 播放 / 导出 ─── -->
-                <section id="step-4" class="step-panel">
-                    <div class="tab4-timeline">
-                        <div class="tab4-heading">
-                            <div class="tab4-heading-copy">
-                                <span>已选音轨与和弦结果</span>
-                                <span id="tab4-track-count" class="selection-count">0 tracks</span>
-                            </div>
-                            <div class="tab4-heading-actions">
-                                <div class="tab4-zoom-controls">
-                                    <button id="btn-zoom-out" class="btn-icon-square" type="button" title="缩小时间轴" aria-label="缩小时间轴">−</button>
-                                    <input id="tab4-zoom" class="tab4-zoom" type="range" min="1" max="16" step="0.5" value="1" aria-label="时间轴缩放">
-                                    <button id="btn-zoom-in" class="btn-icon-square" type="button" title="放大时间轴" aria-label="放大时间轴">+</button>
-                                    <button id="tab4-zoom-label" class="tab4-zoom-label" type="button" title="重置为 1 倍">1x</button>
-                                </div>
-                                <button id="btn-export-midi" class="btn-pill btn-export-midi" type="button">export MIDI</button>
-                            </div>
-                        </div>
-                        <div id="tab4-track-list" class="tab4-track-list">
-                            <p class="empty-msg">正在加载音轨时间轴...</p>
-                        </div>
-                    </div>
-                </section>
-            </div>
-
-            <!-- ═══ 底部操作栏 ═══ -->
-            <footer id="bottom-bar">
-                <button id="btn-prev" class="btn-pill hidden">previous</button>
-                <div id="playback-controls" class="playback-controls hidden">
-                    <input type="range" id="seek-bar" min="0" max="0" step="0.01" value="0" class="seek-bar" aria-label="播放进度">
-                    <span id="time-display" class="time-display">0:00 / 0:00</span>
-                    <button id="btn-play" class="btn-play" aria-label="播放">
-                        <svg width="18" height="18" viewBox="0 0 16 16" fill="currentColor"><path d="M4 2.5v11l9-5.5z"/></svg>
-                    </button>
-                    <span id="speed-label" class="speed-label">x1</span>
-                </div>
-                <button id="btn-next" class="btn-pill">next</button>
-            </footer>
-        </main>
-    </div>
-
-    <script type="module" src="/static/js/app.js?v=20260926p2"></script>
-</body>
-</html>
+<div id="app">
+<aside id="sidebar" aria-label="项目列表">
+<div class="sidebar-logo"><span class="brand-mark">♫</span><span>TABsucks<small>音乐工作台</small></span></div>
+<button id="btn-new-workshop" class="btn-pill" type="button">＋ 新建项目</button><div class="sidebar-caption">我的项目</div><div id="workshop-list" class="workshop-list"></div><div class="sidebar-foot"><span class="status-dot"></span>本地处理 · 音频保留在本机</div>
+</aside>
+<main id="main">
+<header class="app-header"><button id="btn-sidebar" class="btn-icon-square" type="button" aria-label="展开项目列表" aria-expanded="false">☰</button><div class="project-heading"><small>音乐项目</small><h1 id="project-title">开始一段新的音乐探索</h1></div><span id="connection-status" class="connection-status" role="status">连接中</span><details id="audio-export-menu" class="project-menu" hidden><summary class="btn-secondary" aria-label="下载音轨菜单">下载音轨 ▾</summary><div id="audio-export-list" class="menu-items"></div></details><button id="btn-export-midi" class="btn-pill-sm" type="button" disabled title="加入分析后可导出有效和弦结果">导出 MIDI ↗</button></header>
+<nav id="step-bar" class="hidden" aria-label="工作区"><button class="step-indicator" data-tab="1" type="button">导入音频</button><button class="step-indicator" data-tab="2" type="button">分离设置</button><button class="step-indicator" data-tab="3" type="button">分析设置</button><button class="step-indicator" data-tab="4" type="button">音轨工作台</button><span class="nav-hint">试听、分析与导出，在一个工作台完成</span></nav>
+<div id="task-feedback" class="hidden" role="status" aria-live="polite"><div class="task-feedback-body"><span id="task-message"></span><details id="task-errors-wrap" hidden><summary>查看失败记录</summary><div id="task-errors"></div></details></div><button id="btn-dismiss-feedback" class="btn-text" type="button">收起</button></div>
+<div id="step-content">
+<section id="welcome-panel" class="welcome-panel"><div class="welcome-art" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div><span class="eyebrow">从一首歌开始</span><h2>听清每一个声部，<br>找到音乐里的细节。</h2><p>分离音轨、对照和弦，或放慢速度循环练习。<br>选择一个已有项目，或导入你的第一首歌。</p><button id="btn-welcome-new" class="btn-pill-sm" type="button">＋ 导入歌曲</button><div class="welcome-features"><span>分离与导出</span><span>和弦分析</span><span>循环练习</span></div></section>
+<section id="step-1" class="step-panel hidden" aria-label="导入音频"><div class="panel-heading"><div><h2>导入歌曲</h2><p>选择音频或视频文件，也可以粘贴链接。</p></div><button id="btn-close-import" class="btn-text" type="button">取消</button></div><div id="drop-zone" class="drop-zone"><span class="upload-symbol" aria-hidden="true">↥</span><h3>把文件拖到这里</h3><p>一次导入一个文件</p><div class="upload-row"><button id="btn-upload-file" class="btn-pill-sm" type="button">选择本地文件</button><button id="btn-upload-url" class="btn-secondary" type="button">从链接导入</button></div><input type="file" id="file-input" accept="audio/*,video/*" hidden></div><form id="input-url-wrap" class="input-url-wrap hidden"><label for="input-url">音频或视频链接</label><div class="form-inline"><input type="url" id="input-url" class="url-input" placeholder="https://…" required><button id="btn-fetch" class="btn-pill-sm" type="submit">获取音频</button></div></form><div id="audio-info" class="audio-info hidden"><span id="info-filename"></span><span id="info-duration"></span><span id="info-samplerate"></span><button id="btn-continue-tab2" class="btn-text" type="button">开始分离 →</button></div><div id="dl-progress-wrap" class="dl-progress-wrap hidden"><progress id="dl-progress-bar" max="100"></progress><span id="dl-progress-text">正在准备…</span></div></section>
+<section id="step-2" class="step-panel hidden" aria-label="分离设置"><div class="panel-heading"><div><h2>分离音轨</h2><p>生成独立声部。完成后即可试听与下载。</p></div></div><div class="sep-model-row"><label for="sel-separator">分离模型</label><select id="sel-separator"><option value="">加载中…</option></select><button id="btn-start-sep" class="btn-pill-sm" type="button">开始分离</button><button id="btn-cancel-sep" class="btn-secondary hidden" type="button">取消分离</button><span id="sep-ring-wrap-2" class="hidden"><span id="sep-ring-label-2">0%</span></span></div><div class="sep-device-row" role="radiogroup" aria-label="分离计算设备"><span>运行设备</span><label><input type="radio" name="sep-device" value="cpu" checked> CPU</label><label><input type="radio" name="sep-device" value="gpu"> GPU 加速</label></div><p id="sep-status" class="help-text hidden" role="status" aria-live="polite"></p><p class="help-text">选择实际可用的设备。首次运行可能需要准备模型，请留意任务状态。</p><div id="stem-selection-list" class="hidden"></div><span id="selected-track-count" class="hidden"></span></section>
+<section id="step-3" class="step-panel hidden" aria-label="分析设置"><div class="panel-heading"><div><h2>分析音轨</h2><p>在音轨行勾选“加入分析”，配置每条音轨的和弦模型。</p></div><span id="analysis-complete-count" class="selection-count">0 / 0</span></div><div id="analysis-config-list" class="analysis-config-list"></div><div class="panel-actions"><button id="btn-select-analyzable" class="btn-secondary" type="button">全选可分析音轨</button><button id="btn-run-all" class="btn-pill-sm" type="button">分析所选音轨</button><button id="btn-cancel-analysis" class="btn-secondary hidden" type="button">取消当前分析</button></div></section>
+<section id="step-4" class="hidden" aria-label="音轨工作台"><div class="tab4-timeline"><div class="tab4-heading"><div><span class="eyebrow">音轨工作区</span><h2>听见歌曲的每一层 <span id="tab4-track-count" class="selection-count"></span></h2></div><div class="tab4-heading-actions"><label class="check-label"><input id="follow-playhead" type="checkbox" checked> 跟随播放头</label><div class="tab4-zoom-controls"><button id="btn-zoom-out" class="btn-icon-square" type="button" aria-label="缩小时间轴">−</button><input id="tab4-zoom" type="range" min="1" max="16" step="0.5" value="1" aria-label="时间轴缩放"><button id="btn-zoom-in" class="btn-icon-square" type="button" aria-label="放大时间轴">＋</button><button id="tab4-zoom-label" class="btn-text" type="button">1×</button></div></div></div><div class="studio-toolbar"><div class="source-switch" role="group" aria-label="试听来源"><button id="source-full" type="button" aria-pressed="true">原曲对照</button><button id="source-stems" type="button" aria-pressed="false" disabled>分轨混音</button></div><p>分析选择与试听混音分别控制 · 点击波形定位</p></div><div id="tab4-track-list" class="tab4-track-list"><p class="empty-msg">导入音频后显示时间轴</p></div></div></section>
+</div>
+<footer id="bottom-bar" class="hidden"><div id="playback-controls" class="playback-controls"><button id="btn-play" class="btn-play" type="button" aria-label="播放">▶</button><span id="time-display" class="time-display">0:00 / 0:00</span><input type="range" id="seek-bar" min="0" max="0" step="0.01" value="0" aria-label="播放进度"><label class="speed-control">倍速<select id="speed-label" aria-label="播放倍速"><option value="0.5">0.5×</option><option value="0.75">0.75×</option><option value="1" selected>1×</option><option value="1.25">1.25×</option><option value="1.5">1.5×</option><option value="2">2×</option></select></label></div><div class="loop-controls"><button id="btn-loop-a" class="btn-secondary" type="button" title="以当前播放位置设置循环起点">设 A</button><button id="btn-loop-b" class="btn-secondary" type="button" title="以当前播放位置设置循环终点">设 B</button><button id="btn-loop" class="btn-secondary" type="button" aria-pressed="false" disabled>循环</button><button id="btn-loop-clear" class="btn-text" type="button" aria-label="清除循环区间">清除</button><span id="loop-label" class="help-text">未设置循环</span></div></footer>
+</main></div>
+<dialog id="action-dialog"><form method="dialog"><div id="dialog-content"></div><div class="dialog-actions"><button value="cancel" class="btn-secondary">取消</button><button id="dialog-confirm" value="confirm" class="btn-pill-sm">确认</button></div></form></dialog><div id="app-toast" class="toast" role="status" aria-live="polite" hidden></div>
+<div id="audio-engine" hidden aria-hidden="true"></div>
+<script type="module" src="/static/js/app.js?v=20261002v1"></script>
+</body></html>

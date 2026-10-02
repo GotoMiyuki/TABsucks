@@ -71,6 +71,80 @@ def test_init_engine_forces_cpu_execution(monkeypatch, tmp_path: Path) -> None:
     assert engine.loaded_model == "test-model.ckpt"
 
 
+@pytest.mark.parametrize("failure", [RuntimeError("broken checkpoint"), SystemExit(1)])
+def test_failed_model_load_can_be_retried(monkeypatch, tmp_path: Path, failure) -> None:
+    created = []
+
+    class FakeEngine:
+        def __init__(self, **kwargs) -> None:
+            self.loaded_model = None
+            created.append(self)
+
+        def load_model(self, model_name: str) -> None:
+            if len(created) == 1:
+                raise failure
+            self.loaded_model = model_name
+
+    monkeypatch.setattr(
+        "src.plugins.separation.model_1.separator.AudioSeparator", FakeEngine,
+    )
+    monkeypatch.setattr(
+        "src.plugins.separation.model_1.separator._model_directory", lambda name: tmp_path,
+    )
+    plugin = SeparationPlugin()
+    with pytest.raises(SeparatorError, match="模型加载失败"):
+        plugin._init_engine("test-model.ckpt", compute_device="cpu")
+
+    assert plugin._separator_instance is None
+    plugin._init_engine("test-model.ckpt", compute_device="cpu")
+    assert len(created) == 2
+    assert plugin._separator_instance.loaded_model == "test-model.ckpt"
+    assert plugin._separator_device == "cpu"
+
+
+def test_failed_model_switch_preserves_loaded_engine(monkeypatch, tmp_path: Path) -> None:
+    class FakeEngine:
+        def __init__(self, **kwargs) -> None:
+            self.loaded_model = None
+
+        def load_model(self, model_name: str) -> None:
+            if model_name == "broken.ckpt":
+                raise RuntimeError("broken checkpoint")
+            self.loaded_model = model_name
+
+    monkeypatch.setattr(
+        "src.plugins.separation.model_1.separator.AudioSeparator", FakeEngine,
+    )
+    monkeypatch.setattr(
+        "src.plugins.separation.model_1.separator._model_directory", lambda name: tmp_path,
+    )
+    plugin = SeparationPlugin()
+    plugin._init_engine("good.ckpt", compute_device="cpu")
+    loaded_engine = plugin._separator_instance
+    with pytest.raises(SeparatorError, match="模型加载失败"):
+        plugin._init_engine("broken.ckpt", compute_device="cpu")
+
+    assert plugin._separator_instance is loaded_engine
+    assert plugin._separator_model_name == "good.ckpt"
+    assert loaded_engine.loaded_model == "good.ckpt"
+
+
+def test_vendor_exit_during_inference_becomes_separation_error(tmp_path: Path) -> None:
+    class ExitingEngine(_FakeAudioSeparator):
+        def separate(self, input_path: str) -> list[str]:
+            self.input_path = Path(input_path)
+            raise SystemExit(1)
+
+    engine = ExitingEngine(tmp_path)
+    plugin = SeparationPlugin()
+    plugin._separator_instance = engine
+    with pytest.raises(SeparatorError, match="分离过程出错"):
+        plugin._separate(np.zeros((2, 16), dtype=np.float32), 8000, "test-model.ckpt")
+
+    assert engine.input_path is not None
+    assert not engine.input_path.exists()
+
+
 def test_separate_removes_invocation_temp_wavs(tmp_path: Path) -> None:
     engine = _FakeAudioSeparator(tmp_path)
     plugin = SeparationPlugin()

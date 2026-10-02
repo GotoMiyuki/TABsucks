@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from .async_workers import await_blocking as _await_blocking
+from .async_workers import await_committing as _await_committing
 from .task_service import TaskBusyError, TaskRecord
 
 if TYPE_CHECKING:
@@ -22,6 +23,15 @@ logger = logging.getLogger(__name__)
 class WorkshopJobs:
     def __init__(self, kernel: Kernel) -> None:
         self.kernel = kernel
+
+    def _report_separation_progress(self, record, progress=None, **details):
+        details.setdefault("device", record.progress_detail.get("device"))
+        if self.kernel.tasks.report_progress(record, progress, **details):
+            self.kernel.bus.emit(record.workshop_id, "separation_progress", {
+                "progress": progress, **details,
+                "task_id": record.id, "plugin": record.plugin,
+                "updated_at": record.updated_at,
+            })
 
     def start_separation_task(
         self,
@@ -89,7 +99,7 @@ class WorkshopJobs:
     ) -> dict[str, Any]:
         ws = self.kernel._require_manager().get(record.workshop_id)
         try:
-            self.kernel.tasks.stage(record, "loading_audio")
+            self._report_separation_progress(record, stage="loading_audio", device=compute_device)
             if audio_samples is not None:
                 self.kernel._require_orchestrator().get_context(
                     record.workshop_id
@@ -112,6 +122,9 @@ class WorkshopJobs:
                 durations_sec=durations_sec,
                 emit_lifecycle=False,
                 task_id=record.id,
+                progress_callback=lambda progress=None, **details: self._report_separation_progress(
+                    record, progress, **details,
+                ),
             )
             result = await self._finalize_separation_task(
                 record.workshop_id, plugin_name, inner_task, record
@@ -263,10 +276,13 @@ class WorkshopJobs:
 
             if record is not None:
                 self.kernel.tasks.stage(record, "committing")
-            track_files = self._persist_separated_tracks(
+            track_files = await _await_committing(self._persist_separated_tracks,
                 wid,
                 plugin_name,
                 task_id=record.id if record else None,
+                progress_callback=(
+                    lambda progress=None, **details: self._report_separation_progress(record, progress, **details)
+                ) if record else None,
             )
             ws.complete_separation(track_files, task_id=record.id if record else None)
             return result
@@ -279,6 +295,7 @@ class WorkshopJobs:
         wid: str,
         plugin_name: str,
         task_id: str | None = None,
+        progress_callback=None,
     ) -> dict[str, str]:
         """Write RC stem buffers to workshop cache and return relative paths."""
         mgr = self.kernel._require_manager()
@@ -295,6 +312,9 @@ class WorkshopJobs:
         track_files: dict[str, str] = {}
 
         from src.audio.loader import AudioData, save_audio
+
+        if progress_callback:
+            progress_callback(0.0, stage="saving_results", completed=0, total=len(stems), unit="stems")
 
         for stem in stems:
             stem_name = str(stem)
@@ -315,6 +335,9 @@ class WorkshopJobs:
                 ),
             )
             track_files[stem_name] = ws.cache.to_relative(out_path)
+            if progress_callback:
+                progress_callback(len(track_files) / len(stems), stage="saving_results",
+                                  completed=len(track_files), total=len(stems), unit="stems", detail=stem_name)
 
         if not track_files:
             raise RuntimeError("No separated stem buffers were produced")

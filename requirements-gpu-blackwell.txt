@@ -1,0 +1,16 @@
+# NVIDIA RTX 50-series source runtime, verified on Windows / Python 3.12.
+# Use this profile without constraints-windows.txt (that build pins torch 2.6).
+# When switching an existing CPU environment, uninstall onnxruntime first:
+#   python -m pip uninstall -y onnxruntime
+#   python -m pip install -r requirements-gpu-blackwell.txt
+
+-r requirements-base.txt
+
+--extra-index-url https://download.pytorch.org/whl/cu128
+torch==2.7.1+cu128
+torchaudio==2.7.1+cu128
+torchvision==0.22.1+cu128
+
+audio-separator[gpu]==0.44.1
+onnxruntime-gpu==1.23.2
+numpy==2.2.6

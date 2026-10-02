@@ -193,7 +193,7 @@
 
 **触发事件（通过 `/api/events` 接收）**：
 - `separation_started`
-- `separation_progress` × N（progress 0~1）
+- `separation_progress` × N（当前阶段的真实进度 0~1，无法测量时为 null）
 - `separation_done`（最终 Workshop payload: `{tracks: ["vocals", ...]}`）
 
 ---
@@ -212,7 +212,7 @@
 
 ### GET `/api/tasks/{task_id}` · GET `/api/workshops/{wid}/tasks` · POST `/api/tasks/{task_id}/cancel`
 
-任务查询返回 `task_id`、`workshop_id`、`kind`、`plugin`、`track`、`status`、`stage`、`error` 与时间戳；车间列表返回同结构数组。状态为 `queued/running/committing/cancelling/done/failed/cancelled/interrupted`。取消接口返回当前任务结构；在 `committing` 阶段或关闭/删除操作上请求取消返回 409。同步模型不能被强杀，`cancelling` 可能持续至模型线程退出。任务记录只在当前服务进程内可查询，重启后业务状态中的在途任务显示为 `interrupted`。
+任务查询返回 `task_id`、`workshop_id`、`kind`、`plugin`、`track`、`status`、`stage`、`error`、可空的 `progress`、`progress_detail` 与时间戳；车间列表返回同结构数组。状态为 `queued/running/committing/cancelling/done/failed/cancelled/interrupted`。取消接口返回当前任务结构；在 `committing` 阶段或关闭/删除操作上请求取消返回 409。同步模型不能被强杀，`cancelling` 可能持续至模型线程退出。任务记录只在当前服务进程内可查询，重启后业务状态中的在途任务显示为 `interrupted`。
 
 ### GET `/api/workshops/{wid}/analysis-results`
 
@@ -235,12 +235,21 @@
 
 ---
 
-### GET `/api/workshops/{wid}/visualization?track={name}`
+### GET `/api/workshops/{wid}/visualization?track={name}&result_id={id}`
 
 获取 Tab4 可视化 JSON。`track=full` 时波形来自原始音频；指定音轨时波形来自对应的
 分离 stem。节拍与和弦读取该音轨最新完成的 Tab3 分析结果；没有结果时 `beats`、`chords` 返回空数组。
 音频缺失或解码失败时，返回空 `peaks`、零时长以及 `metadata.hasAudioData=false`，不生成随机波形。
 `metadata.hasBeatData`、`hasChordData` 表示是否取得相应分析数据。节拍位置目前由节奏结果中的 BPM 推算，并非逐拍检测输出。
+
+- 合法 `track` 为 `full`、`vocals`、`drums`、`bass`、`piano`、`guitar`、`other`；非法名称返回 400。
+- `metadata.sourceVersion` 为当前音频资源的不透明版本标识，无文件时为 `null`。
+- `metadata.result` 为 `{id, plugin, taskId}`，无有效和弦结果时为 `null`。
+- `metadata.availableResults` 列出当前音轨的有效历史和弦结果，按新到旧排列，字段同 `result`；供前端选择显示版本。
+- 分轨可选 `result_id`，用于读取明确指定的成功结果；不传时读取最新有效和弦结果。
+- 不匹配、文件已更新或失效的结果标识返回 409；不能提交客户端文件路径。`full` 不接受分轨结果标识。
+- 新前端导出时提交当前视图的 `result.id`，避免多个插件或重跑后显示与导出不一致。
+- 波形服务仅缓存压缩峰值，按文件路径、大小和修改时间失效，不缓存完整解码音频。
 
 **响应 200**
 
@@ -255,12 +264,17 @@
 
 ---
 
-### GET `/api/workshops/{wid}/audio/{track}`
+### GET / HEAD `/api/workshops/{wid}/audio/{track}?download=true&v={sourceVersion}`
 
-获取真实分离音轨文件。支持 HTTP Range 请求，供 Tab4 的浏览器播放器拖拽定位和
-多轨同步播放。
+获取真实音频文件。`full` 读取原曲，其他合法名称只读取对应分轨。缺失分轨返回 404，
+不会回退到原曲；非法轨名返回 400。支持 HTTP Range 请求，供浏览器播放器定位。
 
-**响应 200 / 206**: `audio/wav`。
+可选 `download=true` 返回附件响应，文件名为清理非法字符后的“项目名_音轨名.实际扩展名”；
+默认返回行内响应。媒体类型根据实际文件格式生成，原曲不强行标记为 WAV。
+可选 `v` 校验可视化响应中的 `sourceVersion`，版本变化返回 409。`HEAD` 使用相同校验和响应头、无文件正文。
+前端先检查 `HEAD`，再通过文件链接发起单轨下载，不把完整音频加载为 Blob。
+
+**响应 200 / 206**: 实际格式对应的媒体类型，例如 `audio/wav` 或 `audio/mpeg`。
 
 ---
 
@@ -273,6 +287,12 @@ MIDI instrument track，和弦区间会转换为同时起止的组成音。该�
 - `tracks` 可重复传递；不传时默认导出当前全部 `SelectedTracks`。
 - 请求音轨必须属于当前 `SelectedTracks`。
 - 每条请求音轨必须存在最新的已完成和弦分析结果。
+- 可重复传递 `result_ids`，与显式 `tracks` 按请求顺序一一对应；数量不符或音轨重复返回 400。
+- 提供标识时导出明确的对应结果，并校验项目、音轨、结果文件和当前音源版本；失效返回 409。
+- 相关分离或该音轨分析正在进行时返回 409；不静默跳过缺失结果。
+- 旧请求未提供 `result_ids` 时保留默认选择规则。
+
+例：`/api/workshops/{wid}/midi?tracks=guitar&result_ids={visualization.metadata.result.id}`。
 
 **响应 200**: `audio/midi`，附件文件名
 `tabsucks_<workshop_id>_selected.mid`。
@@ -307,7 +327,7 @@ data: {"type": "<event>", "payload": {...}, "workshop_id": "<wid>", "emitted_at"
 | `workshop_load_failed` | `{workshop_id, error}` | 启动时坏车间 |
 | `raw_audio_set` | `{path}` | 上传原音频 |
 | `separation_started` | `{model}` | 分离开始 |
-| `separation_progress` | `{progress: 0~1}` | 进度 |
+| `separation_progress` | `{task_id, plugin, stage, progress, completed?, total?, unit?, detail?, device?, updated_at}` | 当前阶段的真实进度 |
 | `separation_done` | `{tracks: [...]}` | Workshop 持久化分轨后完成 |
 | `separation_failed` | `{model, error}` | 分离失败 |
 | `analysis_started` | `{track, plugin, task_id?}` | 分析开始 |
@@ -316,6 +336,24 @@ data: {"type": "<event>", "payload": {...}, "workshop_id": "<wid>", "emitted_at"
 | `mix_state_changed` | `{track, volume, mute, solo}` | Tab4 混音改 |
 | `playback_state` | `{current_time, is_playing, speed, loop}` | 播放头动 |
 | `state_saved` | `{reason: "autosave"}` | autosave flush |
+
+分离进度的 `progress` 是**当前阶段**的 0～1 完成比例，无法测量时为 `null`；
+不根据运行时间估算，也不表示整体任务的完成比例。切换阶段时重新计数。
+`completed`/`total` 是真实计数，`unit` 为 `bytes`（模型下载）、
+`chunks`（BS-RoFormer 已完成推理片段）或 `stems`（生成、校验、保存的分轨）。
+下载长度未知时仅报告已下载字节数。未识别的推理布局仅报告阶段。
+
+阶段依次包含 `loading_audio`、`loading_plugin`、`preparing_model`、
+`downloading_model`（有需要时）、`loading_model`、`preparing_audio`、
+`separating_audio`、`writing_stems`、`reading_stems`、`saving_results`；
+GPU 任务还可能包含 `waiting_for_gpu`、`preparing_vram`。
+单一阶段到 100% 后仍需完成后续保存，只有 `separation_done` 表示任务成功。
+
+`GET /api/tasks/{task_id}` 和 `GET /api/workshops/{wid}/tasks` 同时返回
+`stage`、可空 `progress`、`progress_detail` 和 `updated_at`，
+其中 `progress_detail` 保留计数、单位、文件/音轨名和实际设备。
+刷新或重连后可以用快照恢复页面提示；使用 `task_id` 和 `updated_at` 丢弃旧事件。
+取消请求后保持 `cancelling`，直到模型退出；失败或取消不显示完成百分比。
 
 ---
 

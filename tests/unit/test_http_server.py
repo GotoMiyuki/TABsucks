@@ -765,6 +765,99 @@ class TestMockEndpoints:
         assert r.status_code == 409
 
 
+class TestWorkbenchMedia:
+    def test_missing_stem_does_not_fall_back_to_raw(self, kernel_and_client):
+        kernel, client = kernel_and_client
+        wid = kernel.create_workshop("X")["id"]
+        ws = kernel.manager.get(wid)
+        raw = ws.cache.workshop_dir / "original.mp3"
+        raw.write_bytes(b"original")
+        ws.state.tab_state.tab1.raw_audio_file_path = ws.cache.to_relative(raw)
+        assert client.get(f"/api/workshops/{wid}/audio/bass").status_code == 404
+        response = client.get(f"/api/workshops/{wid}/audio/full")
+        assert response.content == b"original"
+        assert response.headers["content-type"].startswith("audio/mpeg")
+
+    def test_download_and_head_preserve_file(self, kernel_and_client):
+        kernel, client = kernel_and_client
+        wid = kernel.create_workshop("Song: / test")["id"]
+        ws = kernel.manager.get(wid)
+        path = ws.cache.workshop_dir / "guitar.wav"
+        path.write_bytes(b"real guitar")
+        ws.state.tab_state.tab2.track_audio_file_path = {"guitar": ws.cache.to_relative(path)}
+        url = f"/api/workshops/{wid}/audio/guitar?download=true"
+        head = client.head(url)
+        response = client.get(url)
+        assert head.status_code == 200 and head.content == b""
+        assert response.content == b"real guitar"
+        assert "attachment" in response.headers["content-disposition"]
+        assert "guitar.wav" in response.headers["content-disposition"]
+        assert client.get(f"/api/workshops/{wid}/audio/unknown").status_code == 400
+        assert client.get(url + "&v=stale").status_code == 409
+
+    def test_explicit_result_export_matches_display_and_rejects_stale(
+        self, kernel_and_client, monkeypatch
+    ):
+        kernel, client = kernel_and_client
+        wid = kernel.create_workshop("X")["id"]
+        ws = kernel.manager.get(wid)
+        audio = ws.cache.workshop_dir / "guitar.wav"
+        audio.write_bytes(b"stem")
+        ws.state.tab_state.tab2.separation_state = "done"
+        ws.state.tab_state.tab2.track_audio_file_path = {"guitar": ws.cache.to_relative(audio)}
+        ws.set_selected_tracks(["guitar"])
+        monkeypatch.setattr(
+            "src.ui.api.media._build_waveform",
+            lambda *args: {"duration": 2, "totalFrames": 2, "peaks": [0.1, 0.2]},
+        )
+
+        def add_result(plugin, chord):
+            task_id = ws.upsert_analysis_task("guitar", plugin)
+            path = ws.cache.save_analysis_result(
+                plugin, task_id, {"chords": [{"start": 0, "end": 2, "name": chord}]}, ext="json"
+            )
+            ws.complete_analysis("guitar", task_id, ws.cache.to_relative(path))
+            return path
+
+        old_path = add_result("chord_old", "C")
+        url = f"/api/workshops/{wid}/visualization?track=guitar"
+        old = client.get(url).json()["metadata"]["result"]["id"]
+        add_result("chord_new", "G")
+        current = client.get(url).json()
+        assert current["chords"][0]["name"] == "G"
+        assert current["metadata"]["result"]["plugin"] == "chord_new"
+        assert [item["plugin"] for item in current["metadata"]["availableResults"]] == ["chord_new", "chord_old"]
+        explicit = client.get(url + "&result_id=" + old).json()
+        assert explicit["chords"][0]["name"] == "C"
+        exported = client.get(
+            f"/api/workshops/{wid}/midi", params=[("tracks", "guitar"), ("result_ids", old)]
+        )
+        assert exported.status_code == 200
+        midi = __import__("pretty_midi").PrettyMIDI(io.BytesIO(exported.content))
+        assert {note.pitch % 12 for note in midi.instruments[0].notes} == {0, 4, 7}
+        assert client.get(f"/api/workshops/{wid}/midi", params=[("tracks", "guitar"), ("result_ids", old), ("result_ids", old)]).status_code == 400
+        active, _ = kernel.tasks.admit(wid, "analysis", ("guitar",), plugin="chord_new", track="guitar")
+        assert client.get(f"/api/workshops/{wid}/midi", params=[("tracks", "guitar"), ("result_ids", old)]).status_code == 409
+        kernel.tasks.finish(active, "cancelled")
+        old_path.unlink()
+        assert client.get(url + "&result_id=" + old).status_code == 409
+        assert len(client.get(url).json()["metadata"]["availableResults"]) == 1
+        assert (
+            client.get(
+                f"/api/workshops/{wid}/midi", params=[("tracks", "guitar"), ("result_ids", old)]
+            ).status_code
+            == 409
+        )
+        audio.write_bytes(b"replacement stem")
+        ref = current["metadata"]["result"]["id"]
+        assert (
+            client.get(
+                f"/api/workshops/{wid}/midi", params=[("tracks", "guitar"), ("result_ids", ref)]
+            ).status_code
+            == 409
+        )
+
+
 class TestErrorFormat:
     def test_404_returns_error_key(
         self, kernel_and_client
@@ -785,7 +878,7 @@ class TestStaticFiles:
         # js/app.js 路径是否真挂上了
         r = client.get("/static/js/app.js")
         assert r.status_code == 200
-        assert "app.js" in r.text or "TABsucks" in r.text
+        assert "createPlaybackController" in r.text
         assert r.headers["cache-control"] == "no-store, max-age=0"
 
     def test_index_disables_cache(self, kernel_and_client) -> None:
@@ -795,7 +888,7 @@ class TestStaticFiles:
 
         assert r.status_code == 200
         assert r.headers["cache-control"] == "no-store, max-age=0"
-        assert "app.js?v=20260926p2" in r.text
+        assert "app.js?v=20261002v1" in r.text
 
     def test_tab2_and_tab3_have_separate_responsibilities(
         self, kernel_and_client
@@ -863,7 +956,7 @@ class TestStaticFiles:
 
         assert "event.workshop_id !== this._wid" in stream_js
         assert "stream.setWorkshopId(wid)" in app_js
-        assert "isTrackAnalysisComplete(track)" in app_js
+        assert "state.analysisRunning" in app_js
         analysis_js = client.get("/static/js/analysis_controller.js").text
         assert "createAnalysisController" in app_js
         assert "plugin.name.startsWith('chord_')" in analysis_js

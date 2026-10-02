@@ -35,13 +35,13 @@ def make_progress_callback(
     event_type: str,
     *,
     extra: dict[str, Any] | None = None,
-) -> Callable[[float], None]:
+) -> Callable[..., None]:
     """Build a plugin progress callback that emits to EventBus."""
     payload_base: dict[str, Any] = dict(extra or {})
 
-    def cb(progress: float) -> None:
+    def cb(progress: float | None = None, **details) -> None:
         try:
-            payload = {"progress": float(progress)}
+            payload = {"progress": float(progress) if progress is not None else None, **details}
             payload.update(payload_base)
             bus.emit(wid, event_type, payload)
         except Exception as e:  # noqa: BLE001
@@ -54,11 +54,11 @@ def emit_progress_event(
     bus,
     wid: str,
     event_type: str,
-    progress: float,
+    progress: float | None,
     **extra: Any,
 ) -> None:
     """Emit one progress event with optional structured context."""
-    payload = {"progress": float(progress)}
+    payload = {"progress": float(progress) if progress is not None else None}
     payload.update(extra)
     bus.emit(wid, event_type, payload)
 
@@ -77,6 +77,7 @@ async def call_plugin_execute_async(
     progress_interval_sec: float = 0.5,
     durations_sec: float = 3.0,
     progress_callback=None,
+    measured_progress: bool = False,
     **extra_kwargs,
 ) -> dict[str, Any]:
     """Run a plugin from async orchestration code.
@@ -96,9 +97,15 @@ async def call_plugin_execute_async(
     loop = asyncio.get_running_loop()
     last_progress = 0.0
 
-    def emit_progress(progress: float) -> None:
+    def emit_progress(progress: float | None = None, **details) -> None:
         nonlocal last_progress
         if progress_callback is None:
+            return
+        if measured_progress:
+            bounded = max(0.0, min(float(progress), 1.0)) if progress is not None else None
+            progress_callback(bounded, **details)
+            return
+        if progress is None:
             return
         bounded = max(0.0, min(float(progress), 0.99))
         if bounded < last_progress:
@@ -114,7 +121,7 @@ async def call_plugin_execute_async(
 
     future = loop.run_in_executor(None, sync_run)
     try:
-        if progress_callback is None or bool(getattr(plugin, "reports_progress", False)):
+        if measured_progress or progress_callback is None or bool(getattr(plugin, "reports_progress", False)):
             return await asyncio.shield(future)
 
         heartbeat_interval = max(float(progress_interval_sec), 0.05)
@@ -287,6 +294,7 @@ class Orchestrator:
         durations_sec: float = 3.0,
         emit_lifecycle: bool = True,
         task_id: str | None = None,
+        progress_callback=None,
     ) -> asyncio.Task:
         """Start a separation plugin task and emit lifecycle/progress events."""
         import numpy as np
@@ -301,6 +309,12 @@ class Orchestrator:
 
         async def _run() -> dict[str, Any]:
             async with workshop_lock:
+                cb = progress_callback or make_progress_callback(
+                    bus, wid, progress_event,
+                    extra={"task_id": task_id, "plugin": plugin_name} if task_id else None,
+                )
+                if not emit_lifecycle:
+                    cb(None, stage="loading_plugin")
                 if input_samples is not None:
                     context.rc.set_audio_buffer("raw", input_samples, int(sample_rate))
                     context.rc.set_metadata("sample_rate", int(sample_rate))
@@ -339,35 +353,14 @@ class Orchestrator:
                         "effective_device": effective_device,
                     },
                     )
-                cb = make_progress_callback(
-                    bus, wid, progress_event,
-                    extra={"task_id": task_id, "plugin": resolved_plugin} if task_id else None,
-                )
-                emit_progress_event(
-                    bus,
-                    wid,
-                    progress_event,
-                    0.01,
-                    plugin=resolved_plugin,
-                    stage="loading_plugin",
-                    task_id=task_id,
-                )
-
                 async def execute_plugin() -> dict[str, Any]:
-                    emit_progress_event(
-                        bus,
-                        wid,
-                        progress_event,
-                        0.05,
-                        plugin=resolved_plugin,
-                        stage="running_plugin",
-                        task_id=task_id,
-                    )
+                    cb(None, stage="running_plugin", device=effective_device)
                     return await call_plugin_execute_async(
                         plugin,
                         context.rc,
                         durations_sec=durations_sec,
                         progress_callback=cb,
+                        measured_progress=True,
                         compute_device=effective_device,
                     )
 
@@ -378,25 +371,9 @@ class Orchestrator:
                 vram_reserved = False
                 try:
                     if is_gpu_plugin:
-                        emit_progress_event(
-                            bus,
-                            wid,
-                            progress_event,
-                            0.02,
-                            plugin=resolved_plugin,
-                            stage="waiting_for_gpu",
-                            task_id=task_id,
-                        )
+                        cb(None, stage="waiting_for_gpu")
                         async with self._gpu_semaphore:
-                            emit_progress_event(
-                                bus,
-                                wid,
-                                progress_event,
-                                0.03,
-                                plugin=resolved_plugin,
-                                stage="preparing_vram",
-                                task_id=task_id,
-                            )
+                            cb(None, stage="preparing_vram")
                             vram = context.pm.prepare_vram(resolved_plugin)
                             if not vram.get("ready", False):
                                 message = vram.get("message", "VRAM is not ready")
@@ -410,7 +387,8 @@ class Orchestrator:
                     else:
                         result = await execute_plugin()
 
-                    cb(1.0)
+                    if isinstance(result, dict) and result.get("status") != "failed":
+                        cb(1.0 if emit_lifecycle else None, stage="done" if emit_lifecycle else "saving_results")
                     stems = (
                         result.get("data", {}).get("stems", [])
                         if isinstance(result, dict)

@@ -1,6 +1,6 @@
 /** SSE 全局事件流封装，按当前 active workshop 在前端路由。 */
 
-import api from './api.js?v=20260926p2';
+import api from './api.js?v=20261002v1';
 
 export default class EventStream {
     constructor() {
@@ -26,6 +26,7 @@ export default class EventStream {
         this.disconnect();
         this.setWorkshopId(wid);
         this._source = api.createEventStream();
+        this._source.onopen = () => this._handlers.connection?.forEach(fn => fn({connected:true}));
         this._source.onmessage = (e) => {
             try {
                 const event = JSON.parse(e.data);
@@ -42,6 +43,7 @@ export default class EventStream {
             }
         };
         this._source.onerror = () => {
+            this._handlers.connection?.forEach(fn => fn({connected:false}));
             console.warn('[EventStream] connection error, browser will auto-reconnect');
         };
     }

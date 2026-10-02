@@ -1,8 +1,50 @@
 /** Separation task progress and stem selection. */
-import api from './api.js?v=20260926p2';
-import { state, TRACKS, TRACK_LABELS, TRACK_COLORS } from './app_state.js?v=20260926p2';
+import api from './api.js?v=20261002v1';
+import { state, TRACKS, TRACK_LABELS, TRACK_COLORS } from './app_state.js?v=20261002v1';
+import {escapeHTML} from './ui.js?v=20261002v1';
 
-export function createSeparationController({ showToast, updateNavigationControls, cancelAnalysisBatch, handleRunAllAnalyses, renderAnalysisConfig, loadAnalyzerPlugins }) {
+const SEPARATION_STAGES = {
+    queued: '等待开始', loading_audio: '读取原曲', loading_plugin: '准备分离工具',
+    waiting_for_gpu: '等待 GPU', preparing_vram: '准备 GPU 资源',
+    running_plugin: '分离任务运行中', preparing_model: '准备模型',
+    downloading_model: '下载模型文件', loading_model: '加载模型',
+    preparing_audio: '准备音频', separating_audio: '分离音轨',
+    writing_stems: '生成分轨', reading_stems: '校验分轨',
+    committing: '保存结果', saving_results: '保存结果',
+    done: '分离完成', failed: '分离失败', cancelled: '分离已取消',
+    interrupted: '分离已中断', cancelling: '正在取消，等待模型退出',
+};
+
+export function formatSeparationProgress(payload = {}) {
+    const data = typeof payload === 'number' ? {progress: payload} : payload;
+    const stage = data.stage || 'running_plugin';
+    let text = SEPARATION_STAGES[stage] || '分离任务运行中';
+    let fraction = null;
+    const completed = data.completed;
+    const total = data.total;
+    if (!['failed','cancelled','cancelling','interrupted'].includes(stage) && Number.isFinite(completed) && completed >= 0) {
+        const measured = Number.isFinite(total) && total > 0;
+        if (measured) fraction = Math.min(completed / total, 1);
+        if (data.unit === 'chunks') {
+            text += measured ? ` · ${completed}/${total} 片段（${Math.round(fraction*100)}%）` : ` · 已处理 ${completed} 个片段`;
+        } else if (data.unit === 'bytes') {
+            const mb = value => `${(value / 1048576).toFixed(1)} MB`;
+            text += measured ? ` · ${mb(completed)} / ${mb(total)}` : ` · 已下载 ${mb(completed)}`;
+        } else if (data.unit === 'stems') {
+            text += measured ? ` · ${completed}/${total} 音轨` : ` · 已处理 ${completed} 条音轨`;
+        }
+    } else if (Number.isFinite(data.progress) && !['failed','cancelled','cancelling','interrupted'].includes(stage)) {
+        fraction = Math.max(0, Math.min(data.progress, 1));
+        if (stage !== 'done') text += ` · ${Math.round(fraction*100)}%`;
+    }
+    if (stage === 'done') fraction = 1;
+    if (data.device) text += data.device === 'gpu' ? ' · GPU' : ' · CPU';
+    if (data.error) text += `：${data.error}`;
+    return {text, fraction};
+}
+
+export function createSeparationController({ showToast, updateNavigationControls, cancelAnalysisBatch, handleRunAllAnalyses, renderAnalysisConfig, loadAnalyzerPlugins, confirmAction, onInvalidate, onRefresh }) {
+    let renderedDevice = null;
     function bindStep2() {
         // 下拉填充模型列表（进入 Tab2 时拉一次）
         const sel = document.getElementById('sel-separator');
@@ -12,7 +54,7 @@ export function createSeparationController({ showToast, updateNavigationControls
                 if (!r.ok) { sel.innerHTML = '<option value="">— 加载失败 —</option>'; return; }
                 const list = r.data || r;
                 sel.innerHTML = list.map(p =>
-                    `<option value="${p.name}">${p.display_name}</option>`
+                    `<option value="${escapeHTML(p.name)}">${escapeHTML(p.display_name || p.name)}</option>`
                 ).join('') || '<option value="">— 无可用模型 —</option>';
             })();
         }
@@ -21,6 +63,7 @@ export function createSeparationController({ showToast, updateNavigationControls
         document.getElementById('btn-cancel-sep')?.addEventListener('click', async () => {
             if (!state.separationTaskId) return;
             const result = await api.cancelTask(state.separationTaskId);
+            if (result.ok) updateSepProgress({stage: 'cancelling', task_id: state.separationTaskId});
             showToast(result.ok ? '正在取消分离，等待模型退出' : `取消失败: ${result.error}`, result.ok ? 'info' : 'error');
         });
         document.getElementById('btn-cancel-analysis')?.addEventListener('click', async () => {
@@ -34,8 +77,8 @@ export function createSeparationController({ showToast, updateNavigationControls
     }
 
     async function triggerSeparation() {
-        if (!state.currentWid) {
-            showToast('请先创建车间', 'warning');
+        if (!state.currentWid || state.busy || state.separating || state.analysisRunning.size || !state.hasRawAudio) {
+            showToast('请先导入音频并等待当前任务结束', 'warning');
             return;
         }
         const sel = document.getElementById('sel-separator');
@@ -46,7 +89,10 @@ export function createSeparationController({ showToast, updateNavigationControls
             return;
         }
         const wid = state.currentWid;
+        if (state.separated && !(await confirmAction('重新分离音轨', '<p>成功后将替换音轨，并清空分析选择、分析结果及混音设置。</p>', '重新分离'))) return;
+        if (wid !== state.currentWid || state.separating) return;
         const previous = {
+            separationProgress: state.separationProgress,
             separated: state.separated,
             availableTracks: [...state.availableTracks],
             selectedTracks: new Set(state.selectedTracks),
@@ -56,6 +102,9 @@ export function createSeparationController({ showToast, updateNavigationControls
             analysisPendingPlugins: { ...state.analysisPendingPlugins },
         };
         state.separating = true;
+        state.separationTaskId = null;
+        state.separationProgress = {stage: 'loading_audio', device};
+        onInvalidate();
         document.getElementById('btn-cancel-sep')?.classList.remove('hidden');
         state.separated = false;
         state.availableTracks = [];
@@ -69,13 +118,17 @@ export function createSeparationController({ showToast, updateNavigationControls
         renderStemSelection();
         renderAnalysisConfig();
         updateNavigationControls();
+        // 原曲仍可试听；旧分轨在重跑期间停用。
+        await onRefresh();
+        if (state.currentWid !== wid) return;
         // 显示进度环
         document.getElementById('sep-ring-wrap-2')?.classList.remove('hidden');
         const r = await api.separate(wid, model, device);
-        if (r.ok) state.separationTaskId = r.task_id || null;
         if (state.currentWid !== wid) return;
+        if (r.ok && state.separating) state.separationTaskId = r.task_id || null;
         if (!r.ok) {
             state.separating = false;
+            state.separationProgress = previous.separationProgress;
             document.getElementById('btn-cancel-sep')?.classList.add('hidden');
             state.separated = previous.separated;
             state.availableTracks = previous.availableTracks;
@@ -87,6 +140,7 @@ export function createSeparationController({ showToast, updateNavigationControls
             renderStemSelection();
             renderAnalysisConfig();
             updateNavigationControls();
+            await onRefresh();
             showToast(`启动分离失败: ${r.error}`, 'error');
             return;
         }
@@ -102,16 +156,38 @@ export function createSeparationController({ showToast, updateNavigationControls
         if (wrap) wrap.classList.remove('hidden');
     }
 
-    function updateSepProgress(p) {
+    function updateSepProgress(payload = {}) {
+        const data = typeof payload === 'number' ? {progress: payload} : payload;
+        if (data.task_id && state.separationTaskId && data.task_id !== state.separationTaskId) return;
+        if (data.updated_at && state.separationProgress?.updated_at > data.updated_at) return;
+        state.separationProgress = {...data};
+        renderSepProgress();
+    }
+
+    function renderSepProgress() {
+        const data = state.separationProgress;
+        for (const input of document.querySelectorAll('input[name="sep-device"]')) {
+            input.disabled = state.busy || state.separating;
+            if ((data?.device === 'cpu' || data?.device === 'gpu') && data.device !== renderedDevice) input.checked = input.value === data.device;
+        }
+        renderedDevice = data?.device || null;
+        const status = document.getElementById('sep-status');
+        if (status) {
+            status.classList.toggle('hidden', !data);
+            status.textContent = data ? formatSeparationProgress(data).text : '';
+        }
+        const {fraction} = formatSeparationProgress(data || {});
         // 同时更新 Tab1 和 Tab2 的进度环（避免 DOM 重复 id 问题）
         for (const suffix of ['', '-2']) {
             const ring = document.getElementById(`sep-ring-fg${suffix}`);
             const label = document.getElementById(`sep-ring-label${suffix}`);
-            if (ring) ring.setAttribute('stroke-dashoffset', String(120 - 120 * p));
-            if (label) label.textContent = `${(p * 100).toFixed(0)}%`;
+            if (ring) ring.setAttribute('stroke-dashoffset', String(120 - 120 * (fraction || 0)));
+            if (label) label.textContent = fraction === null ? '处理中…' : `阶段 ${(fraction * 100).toFixed(0)}%`;
+            if (label) label.textContent = !data ? '' : data.stage === 'done' ? '完成' : data.stage === 'failed' ? '失败' : label.textContent;
+            document.getElementById(`sep-ring-wrap${suffix}`)?.classList.toggle('hidden', !data || !state.separating);
             if (ring) {
                 const wrap = ring.closest('.sep-ring-wrap');
-                if (wrap) wrap.classList.remove('hidden');
+                if (wrap) wrap.classList.toggle('hidden', !data || !state.separating);
             }
         }
     }
@@ -132,15 +208,15 @@ export function createSeparationController({ showToast, updateNavigationControls
                 tracks = Object.keys(paths);
             }
         }
-        const missingTracks = TRACKS.filter(track => !tracks.includes(track));
-        if (missingTracks.length > 0) {
+        if (tracks.length === 0) {
             state.separating = false;
             state.separated = false;
+            state.separationProgress = {stage: 'failed', error: '分离结果没有可用音轨', device: state.separationProgress?.device};
             state.availableTracks = TRACKS.filter(track => tracks.includes(track));
             renderStemSelection();
             updateNavigationControls();
             showToast(
-                `分离结果不完整，缺少音轨: ${missingTracks.join(', ')}`,
+                '分离结果没有可用音轨，请检查模型并重试',
                 'error'
             );
             return;
@@ -150,6 +226,7 @@ export function createSeparationController({ showToast, updateNavigationControls
         state.separationTaskId = null;
         document.getElementById('btn-cancel-sep')?.classList.add('hidden');
         state.separated = true;
+        state.separationProgress = {stage: 'done', progress: 1, device: state.separationProgress?.device};
         state.selectedTracks.clear();
         state.analysisResults = {};
         state.analysisResultPlugins = {};
@@ -160,7 +237,8 @@ export function createSeparationController({ showToast, updateNavigationControls
         renderAnalysisConfig();
         updateNavigationControls();
         showToast('分离完成', 'success');
-        loadAnalyzerPlugins().then(() => renderAnalysisConfig());
+        await loadAnalyzerPlugins();
+        if (state.currentWid === wid) renderAnalysisConfig();
     }
 
     function onSeparationFailed(payload = {}) {
@@ -169,13 +247,14 @@ export function createSeparationController({ showToast, updateNavigationControls
         state.separationTaskId = null;
         document.getElementById('btn-cancel-sep')?.classList.add('hidden');
         state.separated = false;
+        state.separationProgress = {stage: 'failed', error: payload.error || '未知错误', device: state.separationProgress?.device};
         renderStemSelection();
         updateNavigationControls();
         const msg = payload.error || 'unknown error';
         showToast(`分离失败: ${msg}`, 'error');
         for (const suffix of ['', '-2']) {
             const label = document.getElementById(`sep-ring-label${suffix}`);
-            if (label) label.textContent = 'failed';
+            if (label) label.textContent = '失败';
         }
     }
 
@@ -196,6 +275,7 @@ export function createSeparationController({ showToast, updateNavigationControls
         if (payload.task_id && state.separationTaskId && payload.task_id !== state.separationTaskId) return;
         state.separating = false;
         state.separationTaskId = null;
+        state.separationProgress = {stage: 'cancelled', device: state.separationProgress?.device};
         document.getElementById('btn-cancel-sep')?.classList.add('hidden');
         updateNavigationControls();
         showToast('分离已取消', 'info');
@@ -273,5 +353,5 @@ export function createSeparationController({ showToast, updateNavigationControls
         renderAnalysisConfig();
         updateNavigationControls();
     }
-    return { bindStep2, updateDlProgress, updateSepProgress, onSeparationDone, onSeparationFailed, waitForOperation, onSeparationCancelled, renderStemSelection };
+    return { bindStep2, updateDlProgress, updateSepProgress, renderSepProgress, onSeparationDone, onSeparationFailed, waitForOperation, onSeparationCancelled, renderStemSelection };
 }

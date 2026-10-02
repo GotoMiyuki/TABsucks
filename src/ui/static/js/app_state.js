@@ -1,7 +1,7 @@
 export const TRACKS = ['vocals', 'drums', 'bass', 'piano', 'guitar', 'other'];
 export const TRACK_LABELS = {
-    vocals: 'VOCAL', drums: 'DRUM', bass: 'BASS',
-    piano: 'KEYBOARD', guitar: 'GUITAR', other: 'ELSE',
+    full: '原曲', vocals: '人声', drums: '鼓', bass: '贝斯',
+    piano: '钢琴', guitar: '吉他', other: '其他',
 };
 export const TRACK_COLORS = {
     vocals: '#5b65ff', drums: '#ff9500', bass: '#34c759',
@@ -16,6 +16,7 @@ export const state = {
     separated: false,
     separating: false,
     separationTaskId: null,
+    separationProgress: null,
     availableTracks: [],
     selectedTracks: new Set(),
     selectionSaving: false,
@@ -40,4 +41,10 @@ export const state = {
     speed: 1,
     raf: null,
     lastTs: 0,
+    mix: {},
+    source: 'full',
+    loop: {a:null, b:null, enabled:false},
+    follow: true,
+    analysisErrors: {},
+    resultSelections: {},
 };

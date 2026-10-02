@@ -1,6 +1,7 @@
 /** analysis controller: shared state, explicit host callbacks. */
-import api from './api.js?v=20260926p2';
-import { state, TRACKS, TRACK_LABELS, TRACK_COLORS } from './app_state.js?v=20260926p2';
+import api from './api.js?v=20261002v1';
+import { state, TRACKS, TRACK_LABELS, TRACK_COLORS } from './app_state.js?v=20261002v1';
+import {escapeHTML} from './ui.js?v=20261002v1';
 
 export function createAnalysisController({ showToast, updateNavigationControls }) {
     function onAnalysisStarted(payload = {}) {
@@ -11,10 +12,12 @@ export function createAnalysisController({ showToast, updateNavigationControls }
             state.analysisPendingPlugins[track] = payload.plugin;
         }
         state.analysisRunning.add(track);
+        delete state.analysisErrors[track];
+        renderAnalysisConfig();
         updateAnalysisCardState(track, 'running');
         updateAnalysisCompletionCount();
         updateNavigationControls();
-        showToast(`分析 ${track} 已开始...`, 'info');
+        showToast(`正在分析${TRACK_LABELS[track]}…`, 'info');
     }
 
     function onAnalysisProgress(track, progress, taskId) {
@@ -40,6 +43,7 @@ export function createAnalysisController({ showToast, updateNavigationControls }
         if (payload.task_id && state.analysisTaskIds[track] && payload.task_id !== state.analysisTaskIds[track]) return;
         state.analysisRunning.delete(track);
         delete state.analysisTaskIds[track];
+        delete state.analysisErrors[track];
         const plugin = payload.plugin || state.analysisPendingPlugins[track];
         delete state.analysisPendingPlugins[track];
         const result = normalizeAnalysisResult(payload.result);
@@ -47,13 +51,14 @@ export function createAnalysisController({ showToast, updateNavigationControls }
             state.analysisResults[track] = result;
             state.analysisResultPlugins[track] = plugin;
         }
+        renderAnalysisConfig();
         updateAnalysisCardState(
             track,
             isTrackAnalysisComplete(track) ? 'done' : 'idle'
         );
         updateAnalysisCompletionCount();
         updateNavigationControls();
-        showToast(`分析 ${track} 完成`, 'success');
+        showToast(`${TRACK_LABELS[track]}分析完成`, 'success');
         advanceAnalysisBatch(track);
     }
 
@@ -67,7 +72,9 @@ export function createAnalysisController({ showToast, updateNavigationControls }
         updateAnalysisCardState(track, 'idle');
         updateAnalysisCompletionCount();
         updateNavigationControls();
-        showToast(`分析 ${track} 失败: ${payload.error || '未知错误'}`, 'error');
+        state.analysisErrors[track] = payload.error || '分析失败，请重试';
+        renderAnalysisConfig();
+        showToast(`${TRACK_LABELS[track]}分析失败: ${payload.error || '未知错误'}`, 'error');
         advanceAnalysisBatch(track);
     }
 
@@ -78,8 +85,12 @@ export function createAnalysisController({ showToast, updateNavigationControls }
         state.analysisRunning.delete(track);
         delete state.analysisTaskIds[track];
         cancelAnalysisBatch();
+        delete state.analysisPendingPlugins[track];
         updateAnalysisCardState(track, 'idle');
-        showToast(`分析 ${track} 已取消`, 'info');
+        state.analysisErrors[track] = '分析已取消，可重新分析';
+        renderAnalysisConfig();
+        updateNavigationControls();
+        showToast(`${TRACK_LABELS[track]}分析已取消`, 'info');
     }
 
     // ══════════════════════════════════════
@@ -111,6 +122,7 @@ export function createAnalysisController({ showToast, updateNavigationControls }
         for (const track of TRACKS) {
             if (!state.selectedTracks.has(track)) continue;
             const compatible = compatibleAnalyzers(track);
+            if (compatible.some(p => p.name === state.analyzerSelections[track])) continue;
             const resultPlugin = state.analysisResultPlugins[track];
             const preferred = compatible.some(p => p.name === resultPlugin)
                 ? resultPlugin
@@ -124,6 +136,7 @@ export function createAnalysisController({ showToast, updateNavigationControls }
         return !!selectedPlugin
             && !!state.analysisResults[track]
             && state.analysisResultPlugins[track] === selectedPlugin
+            && !state.analysisErrors[track]
             && !state.analysisRunning.has(track);
     }
 
@@ -139,19 +152,19 @@ export function createAnalysisController({ showToast, updateNavigationControls }
                 compatibleAnalyzers(track).length > 0
                 && !isTrackAnalysisComplete(track)
             );
-            runAll.disabled = !hasRunnable
+            runAll.disabled = state.busy || state.separating || !hasRunnable
                 || state.analysisRunning.size > 0
                 || state.analysisBatchRunning;
             runAll.textContent = state.analysisBatchRunning
-                ? 'running batch...'
-                : 'run all selected';
+                ? '按顺序分析中…'
+                : `分析所选 ${tracks.length} 条音轨`;
         }
         if (tracks.length === 0) {
-            container.innerHTML = '<p class="empty-msg compact">请先在 Tab2 选择音轨</p>';
+            container.innerHTML = '<p class="empty-msg compact">在下方音轨行勾选“加入分析”，试听不受此选择影响。</p>';
             return;
         }
         if (_analyzerPlugins.length === 0) {
-            container.innerHTML = '<p class="empty-msg">no analyzer plugins available</p>';
+            container.innerHTML = '<p class="empty-msg">没有可用的和弦分析插件。请检查模型与插件安装。</p>';
             return;
         }
 
@@ -164,8 +177,8 @@ export function createAnalysisController({ showToast, updateNavigationControls }
             }
             const activePlugin = state.analyzerSelections[track];
             const opts = compatible.map(p =>
-                `<option value="${p.name}" ${p.name === activePlugin ? 'selected' : ''}>
-                    ${p.display_name || p.name}
+                `<option value="${escapeHTML(p.name)}" ${p.name === activePlugin ? 'selected' : ''}>
+                    ${escapeHTML(p.display_name || p.name)}
                 </option>`
             ).join('');
             const running = state.analysisRunning.has(track);
@@ -174,23 +187,23 @@ export function createAnalysisController({ showToast, updateNavigationControls }
             const queued = state.analysisBatchQueue.some(
                 item => item.track === track
             );
-            const controlsDisabled = running
+            const controlsDisabled = state.busy || state.separating || state.analysisRunning.size > 0 || running
                 || unsupported
                 || state.analysisBatchRunning;
             const statusCls = running ? 'running' : (done ? 'done' : '');
             return `
                 <div class="analysis-track-card" data-track="${track}">
-                    <span class="track-label" style="color:${TRACK_COLORS[track] || '#fff'}">
+                    <span class="track-label">
                         ${TRACK_LABELS[track] || track}
                     </span>
-                    <select class="sel-analyzer" data-track="${track}" ${controlsDisabled ? 'disabled' : ''}>
-                        ${unsupported ? '<option value="">no compatible chord analyzer</option>' : opts}
+                    <select class="sel-analyzer" aria-label="${TRACK_LABELS[track]}分析模型" data-track="${track}" ${controlsDisabled ? 'disabled' : ''}>
+                        ${unsupported ? '<option value="">无适配和弦模型</option>' : opts}
                     </select>
                     <button class="btn-pill-sm btn-run-analysis" data-track="${track}" ${controlsDisabled ? 'disabled' : ''}>
-                        ${unsupported ? 'unavailable' : (running ? 'running...' : (queued ? 'queued' : (done ? 're-run' : 'run')))}
+                        ${unsupported ? '不可分析' : (running ? '分析中…' : (queued ? '等待中' : (done ? '重新分析' : '开始分析')))}
                     </button>
                     <span class="analysis-status ${unsupported ? 'unsupported' : (queued ? 'queued' : statusCls)}">
-                        ${unsupported ? 'unsupported' : (running ? '···' : (queued ? 'queued' : (done ? 'done' : '')))}
+                        ${unsupported ? '无适配模型' : (running ? '运行中' : (queued ? '已排队' : (done ? '已完成' : escapeHTML(state.analysisErrors[track] || '尚未分析'))))}
                     </span>
                 </div>`;
         }).join('');
@@ -208,7 +221,7 @@ export function createAnalysisController({ showToast, updateNavigationControls }
     }
 
     async function handleRunAnalysis(track, pluginOverride = null) {
-        if (!state.currentWid) return false;
+        if (!state.currentWid || state.busy || state.separating || state.analysisRunning.size > 0 || !state.selectedTracks.has(track)) return false;
         if (state.analysisRunning.has(track)) return false;
 
         const sel = document.querySelector(`.sel-analyzer[data-track="${track}"]`);
@@ -221,18 +234,20 @@ export function createAnalysisController({ showToast, updateNavigationControls }
         const wid = state.currentWid;
         state.analyzerSelections[track] = plugin;
         state.analysisPendingPlugins[track] = plugin;
-        delete state.analysisResults[track];
-        delete state.analysisResultPlugins[track];
+        delete state.analysisErrors[track];
         state.analysisRunning.add(track);
+        renderAnalysisConfig();
         updateAnalysisCardState(track, 'running');
         updateNavigationControls();
 
         const r = await api.analyze(wid, track, plugin);
-        if (r.ok) state.analysisTaskIds[track] = r.task_id || null;
         if (state.currentWid !== wid) return false;
+        if (r.ok && state.analysisRunning.has(track)) state.analysisTaskIds[track] = r.task_id || null;
         if (!r.ok) {
             state.analysisRunning.delete(track);
             delete state.analysisPendingPlugins[track];
+            state.analysisErrors[track] = r.error || '启动分析失败，可重试';
+            renderAnalysisConfig();
             updateAnalysisCardState(track, 'idle');
             showToast(`启动分析失败: ${r.error}`, 'error');
             return false;
@@ -248,15 +263,15 @@ export function createAnalysisController({ showToast, updateNavigationControls }
         const sel = card.querySelector('.sel-analyzer');
 
         if (st === 'running') {
-            if (btn) { btn.textContent = 'running...'; btn.disabled = true; }
+            if (btn) { btn.textContent = '分析中…'; btn.disabled = true; }
             if (sel) sel.disabled = true;
             if (status) { status.textContent = '···'; status.className = 'analysis-status running'; }
         } else if (st === 'done') {
-            if (btn) { btn.textContent = 're-run'; btn.disabled = false; }
+            if (btn) { btn.textContent = '重新分析'; btn.disabled = false; }
             if (sel) sel.disabled = false;
-            if (status) { status.textContent = 'done'; status.className = 'analysis-status done'; }
+            if (status) { status.textContent = '已完成'; status.className = 'analysis-status done'; }
         } else {
-            if (btn) { btn.textContent = 'run'; btn.disabled = false; }
+            if (btn) { btn.textContent = '开始分析'; btn.disabled = false; }
             if (sel) sel.disabled = false;
             if (status) { status.textContent = ''; status.className = 'analysis-status'; }
         }
@@ -301,7 +316,7 @@ export function createAnalysisController({ showToast, updateNavigationControls }
             state.analysisBatchRunning = false;
             renderAnalysisConfig();
             updateNavigationControls();
-            showToast('所有已选音轨分析完成', 'success');
+            showToast('批量任务已结束，请查看各音轨结果与失败状态', 'info');
             return;
         }
 
