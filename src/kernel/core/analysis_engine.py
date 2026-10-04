@@ -14,7 +14,7 @@ from src.kernel.core.plugin_manager import PluginManager, PluginManagerError
 from src.kernel.core.resource_controller import ResourceController
 
 if TYPE_CHECKING:
-    from src.plugins.separation.separator_old_type import SeparationResult
+    from src.plugins.separation import SeparationResult
 
 
 @dataclass
@@ -60,7 +60,7 @@ class AnalysisEngine:
     单步模式使用方式::
 
         engine = AnalysisEngine(rc, pm)
-        chord_events = engine.run_single("piano", "chord_chordnet_2e1d")
+        chord_events = engine.run_single("piano", "chord_ismir2019")
     """
 
     # 和弦识别默认在这些 stem 上执行
@@ -158,7 +158,7 @@ class AnalysisEngine:
 
         Args:
             track_id: 目标音轨名称（如 ``"piano"``, ``"drums"``）。
-            plugin_name: 插件名称（如 ``"chord_chordnet_2e1d"``）。
+            plugin_name: 插件 manifest 中注册的分析插件 ID。
             progress_callback: 可选回调 ``(step: str, progress: float)``。
 
         Returns:
@@ -259,8 +259,8 @@ class AnalysisEngine:
 
         try:
             plugin = self._pm.ensure_plugin(plugin_name)
-        except PluginManagerError:
-            plugin = None
+        except PluginManagerError as error:
+            raise AnalysisEngineError(f"分离插件不可用: {plugin_name}") from error
 
         if plugin is not None:
             if self._pm.get_manifest(plugin_name) is not None:
@@ -275,29 +275,11 @@ class AnalysisEngine:
                 if self._pm.get_manifest(plugin_name) is not None:
                     self._rc.release_vram(plugin_name)
 
-        from src.audio.loader import AudioData
-        from src.plugins.separation.separator_old_type import Separator, TrackId
-
-        raw_audio = self._rc.get_buffer("raw")
-        sr = self._rc.get_metadata("sample_rate") or 44100
-        duration = len(raw_audio) / sr
-
-        separator = Separator()
-        audio_data = AudioData(samples=raw_audio, sample_rate=sr, duration=duration)
-        result = separator.separate(audio_data)
-
-        # 桥接：将分离结果写入 RC buffer，供后续插件使用
-        for track_id in TrackId:
-            self._rc.set_buffer(track_id.value, result.get_track(track_id))
-        self._rc.set_metadata("separation_result", result)
-        self._rc.set_metadata("sample_rate", result.sample_rate)
-
-        return result
+        raise AnalysisEngineError(f"分离插件不可用: {plugin_name}")
 
     def _run_chord(self, stem: str) -> list[ChordEvent]:
         """对指定 stem 执行和弦识别并归一化。"""
         chord_plugin_names = [
-            "chord_chordnet_2e1d",
             "chord_btc_sl",
             "chord_ismir2019",
         ]

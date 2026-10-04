@@ -157,7 +157,8 @@ class TestStateDataclasses:
         )
         d = ws.to_dict()
         # 顶层 key 名与会议一致
-        assert set(d.keys()) == {"WorkshopName", "LastTab", "TabState"}
+        assert set(d.keys()) == {"SchemaVersion", "WorkshopName", "LastTab", "TabState"}
+        assert d["SchemaVersion"] == 1
         assert d["WorkshopName"] == "MySong"
         ws2 = WorkshopState.from_dict(d)
         assert ws2.workshop_name == "MySong"
@@ -358,9 +359,9 @@ class TestMusicWorkshopBusinessOps:
         wid = WorkshopCache.new_workshop_id()
         cache = WorkshopCache(wid, root=tmp_path)
         ws = MusicWorkshop(wid, cache, event_bus=bus, autosave=False)
-        tid = ws.upsert_analysis_task("guitar", "chord_chordnet_2e1d")
+        tid = ws.upsert_analysis_task("guitar", "chord_ismir2019")
         result_abs = ws.cache.analysis_result_file(
-            "chord_chordnet_2e1d",
+            "chord_ismir2019",
             tid,
             "json",
         )
@@ -378,7 +379,7 @@ class TestMusicWorkshopBusinessOps:
 
         done_events = [event for event in bus.events if event[1] == "analysis_done"]
         assert len(done_events) == 1
-        assert done_events[0][2]["plugin"] == "chord_chordnet_2e1d"
+        assert done_events[0][2]["plugin"] == "chord_ismir2019"
         assert done_events[0][2]["result"] == result
 
     def test_complete_analysis_rejects_bad_path(
@@ -463,6 +464,15 @@ class TestMusicWorkshopBusinessOps:
         ws.state.tab_state.tab4["vocals"] = Tab4TrackState()
 
         ws.start_separation("separation_test")
+
+        # A rerun preserves the previous committed result until replacement
+        # files and state are both ready.
+        assert ws.get_selected_tracks() == ["vocals"]
+        assert ws.state.tab_state.tab3
+        replacement = ws.cache.track_audio_path("vocals", "replacement.wav")
+        replacement.parent.mkdir(parents=True, exist_ok=True)
+        replacement.write_bytes(b"replacement")
+        ws.complete_separation({"vocals": ws.cache.to_relative(replacement)})
 
         assert ws.get_selected_tracks() == []
         assert ws.state.tab_state.tab3 == {}

@@ -143,12 +143,14 @@ class SeparationPlugin(BasePlugin):
         print(f"[{self.name}] Compute device: {compute_device}")
 
         # 1. 从 ResourceController 获取原始音频
-        raw_audio = rc.get_buffer("raw")
-        sample_rate = rc.get_metadata("sample_rate") or 22050
+        from src.audio.contracts import as_audio
 
-        # 确保 raw_audio 是 2D: (channels, samples)
-        if raw_audio.ndim == 1:
-            raw_audio = raw_audio[np.newaxis, :]
+        if hasattr(rc, "get_audio_buffer"):
+            raw_audio, sample_rate = rc.get_audio_buffer("raw")
+        else:
+            raw_audio = rc.get_buffer("raw")
+            sample_rate = rc.get_metadata("sample_rate") or 22050
+        raw_audio = as_audio(raw_audio, int(sample_rate))
 
         # 2. 执行分离
         result = self._separate(
@@ -161,7 +163,10 @@ class SeparationPlugin(BasePlugin):
         # 3. 回写各 stem buffer 到 ResourceController
         for track_id in TrackId:
             stem_data = result.get_track(track_id)
-            rc.set_buffer(track_id.value, stem_data)
+            if hasattr(rc, "set_audio_buffer"):
+                rc.set_audio_buffer(track_id.value, stem_data, int(result.sample_rate))
+            else:
+                rc.set_buffer(track_id.value, stem_data)
 
         # 4. 写入元数据
         rc.set_metadata("separation_model", model_name)
@@ -249,7 +254,7 @@ class SeparationPlugin(BasePlugin):
 
         try:
             # soundfile 写入时需要将 shape (channels, samples) 转置为 (samples, channels)
-            sf.write(temp_in_path, audio.T, sr)
+            sf.write(temp_in_path, audio.T, sr, subtype="FLOAT")
 
             # 2. 调用模型，开始分离！
             # 6 轨模型跑完后，会返回一个包含了 6 个具体文件名的列表
@@ -260,73 +265,54 @@ class SeparationPlugin(BasePlugin):
                 if output_path.parent == output_dir:
                     output_paths.append(output_path)
 
-            # 3. 初始化结果字典，用全零数组垫底
-            # 万一模型少吐了某个轨，这里也有个静音轨道顶着，不会让后续和弦分析报错
-            tracks_data = {
-                "vocals": np.zeros((n_samples, 2)),
-                "drums": np.zeros((n_samples, 2)),
-                "bass": np.zeros((n_samples, 2)),
-                "piano": np.zeros((n_samples, 2)),
-                "guitar": np.zeros((n_samples, 2)),
-                "other": np.zeros((n_samples, 2)),
-            }
+            # Missing model outputs must fail instead of fabricating silent stems.
+            from src.audio.contracts import as_audio
+
+            tracks_data: dict[str, np.ndarray] = {}
 
             # 4. 遍历提取模型吐出来的每个音频文件
             for path in output_paths:
                 if not path.exists():
-                    continue  # 文件不在就跳过，用上面初始化的全零数组
+                    raise SeparatorError(f"模型输出文件不存在: {path.name}")
 
                 # 读取分离后的音频数据
-                data, _ = sf.read(path)
+                data, output_sr = sf.read(path, dtype="float32", always_2d=True)
+                data = as_audio(data, int(output_sr), layout="samples_first")
+                if output_sr != sr:
+                    import librosa
 
-                ##############注释内容为压缩成单声道实现###############
-                """# 如果模型输出的是立体声 (shape: samples, channels)，我们强转为单声道
-                if data.ndim > 1:
-                    data = data.mean(axis=1)
+                    data = librosa.resample(
+                        data, orig_sr=int(output_sr), target_sr=int(sr), axis=-1,
+                    ).astype(np.float32, copy=False)
 
-                # 极其重要的一步：对齐数组长度！
-                # AI 模型在做 STFT/ISTFT 变换时，因为窗口填充(padding)，
-                # 吐出来的音频长度可能比原音频多出或者少几个采样点。
-                # 必须强行对齐，否则后面 6 轨一起播放时会因为长度不同步而崩溃或报错。
-                if len(data) > n_samples:
-                    data = data[:n_samples] # 截断多余的尾巴
-                elif len(data) < n_samples:
-                    data = np.pad(data, (0, n_samples - len(data))) # 补零填满"""
-                #####################接下里为双声道保留######################
-                # 获取当前音频的采样点数 (第 0 个维度)
-                current_samples = data.shape[0]
+                # Model padding can cause small time-axis length differences.
+                current_samples = data.shape[-1]
+                if abs(current_samples - n_samples) > max(4096, n_samples // 100):
+                    raise SeparatorError(
+                        f"模型输出 {path.name} 时长异常: {current_samples} vs {n_samples} samples"
+                    )
 
-                # 【修改对齐逻辑，兼容 1D 和 2D 数组】
                 if current_samples > n_samples:
-                    # 截断超出部分（如果是 2D，要保留所有通道）
-                    if data.ndim == 1:
-                        data = data[:n_samples]
-                    else:
-                        data = data[:n_samples, :]
+                    data = data[:, :n_samples]
 
                 elif current_samples < n_samples:
-                    # 补零填满
                     pad_length = n_samples - current_samples
-                    if data.ndim == 1:
-                        data = np.pad(data, (0, pad_length))
-                    else:
-                        # 对于 2D 数组，只在时间轴(第0维)补零，通道轴(第1维)不补
-                        data = np.pad(data, ((0, pad_length), (0, 0)))
+                    data = np.pad(data, ((0, 0), (0, pad_length)))
 
                 # 5. 根据文件名包含的关键词，智能归类到对应的音轨槽位里
                 lower_name = path.name.lower()
-                if "vocals" in lower_name:
-                    tracks_data["vocals"] = data
-                elif "drums" in lower_name:
-                    tracks_data["drums"] = data
-                elif "bass" in lower_name:
-                    tracks_data["bass"] = data
-                elif "piano" in lower_name:
-                    tracks_data["piano"] = data
-                elif "guitar" in lower_name:
-                    tracks_data["guitar"] = data
-                else:
-                    tracks_data["other"] = data
+                track_name = next(
+                    (name for name in ("vocals", "drums", "bass", "piano", "guitar", "other")
+                     if name in lower_name),
+                    None,
+                )
+                if track_name is None or track_name in tracks_data:
+                    raise SeparatorError(f"模型输出轨名未知或重复: {path.name}")
+                tracks_data[track_name] = data
+
+            missing = {"vocals", "drums", "bass", "piano", "guitar", "other"} - tracks_data.keys()
+            if missing:
+                raise SeparatorError(f"模型缺少音轨: {sorted(missing)}")
 
             # 6. 组装并返回最终的数据对象
             return SeparationResult(
@@ -357,8 +343,8 @@ class SeparationPlugin(BasePlugin):
 
         先加载音频到 RC，再调用 execute()。
         """
-        from src.audio.loader import load_audio
-        audio = load_audio(path)
-        rc.set_buffer("raw", audio.samples)
+        from src.audio.loader import load_audio_multi_channel
+        audio = load_audio_multi_channel(path)
+        rc.set_audio_buffer("raw", audio.samples, audio.sample_rate)
         rc.set_metadata("sample_rate", audio.sample_rate)
         return self.execute(rc)

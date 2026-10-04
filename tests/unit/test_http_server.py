@@ -176,7 +176,8 @@ class TestUpload:
         assert body["ok"] is True
         assert body["name"] == "my_song"  # Path("my_song.mp3").stem
         # 文件落盘
-        assert (tmp_path / f"workshop_{wid}" / "raw_audio" / "my_song.mp3").exists()
+        assert (tmp_path / f"workshop_{wid}" / "raw_audio" / body["filename"]).exists()
+        assert body["filename"].endswith("_my_song.mp3")
 
     def test_upload_does_not_overwrite_user_name(
         self, kernel_and_client, tmp_path
@@ -191,7 +192,7 @@ class TestUpload:
         # 用户命名的不被覆盖
         assert state["WorkshopName"] == "My Custom"
         # 但 raw_audio_file_path 写入了（跨平台用 Path 比较）
-        assert _P(state["TabState"]["Tab1"]["RawAudioFilePath"]) == _P("raw_audio/song.mp3")
+        assert _P(state["TabState"]["Tab1"]["RawAudioFilePath"]).name.endswith("_song.mp3")
 
     def test_upload_to_missing_workshop(self, kernel_and_client) -> None:
         _, client = kernel_and_client
@@ -534,12 +535,12 @@ class TestMockEndpoints:
         kernel, client = kernel_and_client
         wid = kernel.create_workshop("X")["id"]
         ws = kernel.manager.get(wid)
-        tid = ws.upsert_analysis_task("guitar", "chord_chordnet_2e1d")
+        tid = ws.upsert_analysis_task("guitar", "chord_ismir2019")
         expected = {
             "chords": [{"start": 0.0, "end": 1.0, "chord": "C"}]
         }
         result_abs = ws.cache.save_analysis_result(
-            "chord_chordnet_2e1d",
+            "chord_ismir2019",
             tid,
             expected,
             ext="json",
@@ -552,7 +553,7 @@ class TestMockEndpoints:
         assert r.json()["results"]["guitar"] == expected
         assert (
             r.json()["result_plugins"]["guitar"]
-            == "chord_chordnet_2e1d"
+            == "chord_ismir2019"
         )
 
     def test_analysis_results_restore_latest_rerun(
@@ -563,9 +564,9 @@ class TestMockEndpoints:
         ws = kernel.manager.get(wid)
 
         for plugin, chord in (
-            ("chord_chordnet_2e1d", "C"),
+            ("chord_ismir2019", "C"),
             ("chord_btc_sl", "G"),
-            ("chord_chordnet_2e1d", "Am"),
+            ("chord_ismir2019", "Am"),
         ):
             tid = ws.upsert_analysis_task("guitar", plugin)
             result = {"chords": [{"chord": chord}]}
@@ -588,16 +589,19 @@ class TestMockEndpoints:
         assert body["results"]["guitar"]["chords"][0]["chord"] == "Am"
         assert (
             body["result_plugins"]["guitar"]
-            == "chord_chordnet_2e1d"
+            == "chord_ismir2019"
         )
 
-    def test_visualization_mock(self, kernel_and_client) -> None:
+    def test_visualization_without_audio_returns_empty_data(self, kernel_and_client) -> None:
         kernel, client = kernel_and_client
         wid = kernel.create_workshop("X")["id"]
         r = client.get(f"/api/workshops/{wid}/visualization?track=full")
         assert r.status_code == 200
         body = r.json()
-        assert "waveform" in body or "beats" in body
+        assert body["waveform"]["peaks"] == []
+        assert body["beats"] == []
+        assert body["metadata"]["hasAudioData"] is False
+        assert body["metadata"]["hasBeatData"] is False
 
     def test_visualization_uses_requested_stem_waveform(
         self, kernel_and_client, monkeypatch
@@ -791,7 +795,7 @@ class TestStaticFiles:
 
         assert r.status_code == 200
         assert r.headers["cache-control"] == "no-store, max-age=0"
-        assert "app.js?v=20260716g" in r.text
+        assert "app.js?v=20260926p2" in r.text
 
     def test_tab2_and_tab3_have_separate_responsibilities(
         self, kernel_and_client
@@ -819,7 +823,9 @@ class TestStaticFiles:
 
         assert 'name="sep-device" value="gpu"' in html
         assert 'name="sep-device" value="cpu"' in html
-        assert "api.separate(wid, model, device)" in app_js
+        separation_js = client.get("/static/js/separation_controller.js").text
+        assert "createSeparationController" in app_js
+        assert "api.separate(wid, model, device)" in separation_js
         assert "JSON.stringify({ model, device })" in api_js
 
     def test_tab4_has_selected_track_timeline_and_playback_controls(
@@ -836,14 +842,16 @@ class TestStaticFiles:
         assert step4 < track_list < step4_end < playback
 
         app_js = client.get("/static/js/app.js").text
-        assert "state.selectedTracks.has(track)" in app_js
-        assert "createTab4AudioElements(wid, tracks)" in app_js
-        assert "className = 'tab4-playhead'" in app_js
-        assert "renderChordBlocks(" in app_js
+        playback_js = client.get("/static/js/playback_controller.js").text
+        assert "state.selectedTracks.has(track)" in playback_js
+        assert "createPlaybackController" in app_js
+        assert "createTab4AudioElements(wid, tracks)" in playback_js
+        assert "className = 'tab4-playhead'" in playback_js
+        assert "renderChordBlocks(" in playback_js
         assert 'id="tab4-zoom"' in html
         assert 'id="btn-export-midi"' in html
-        assert "calculateTimelineLayout" in app_js
-        assert "api.exportMidi" in app_js
+        assert "calculateTimelineLayout" in playback_js
+        assert "api.exportMidi" in playback_js
 
     def test_frontend_filters_events_and_binds_results_to_plugins(
         self, kernel_and_client
@@ -856,8 +864,10 @@ class TestStaticFiles:
         assert "event.workshop_id !== this._wid" in stream_js
         assert "stream.setWorkshopId(wid)" in app_js
         assert "isTrackAnalysisComplete(track)" in app_js
-        assert "plugin.name.startsWith('chord_')" in app_js
-        assert "plugin.input_stems.includes(track)" in app_js
+        analysis_js = client.get("/static/js/analysis_controller.js").text
+        assert "createAnalysisController" in app_js
+        assert "plugin.name.startsWith('chord_')" in analysis_js
+        assert "plugin.input_stems.includes(track)" in analysis_js
 
 
 class TestPluginEndpoints:

@@ -1,7 +1,18 @@
 """核心业务逻辑模块。"""
 
+
 def __getattr__(name: str):
     """延迟导入，避免在不需要时加载重量级依赖。"""
+    if name in ("MusicWorkshop", "WorkshopManager", "WorkshopState"):
+        from .music_workshop import MusicWorkshop
+        from .workshop_manager import WorkshopManager
+        from .workshop_state import WorkshopState
+
+        return {
+            "MusicWorkshop": MusicWorkshop,
+            "WorkshopManager": WorkshopManager,
+            "WorkshopState": WorkshopState,
+        }[name]
     if name == "Workspace" or name == "WorkspaceManager":
         from src.kernel.core.workspace import Workspace, WorkspaceManager
 
@@ -26,8 +37,9 @@ def __getattr__(name: str):
 
 
 __all__ = [
-    "Workspace",
-    "WorkspaceManager",
+    "MusicWorkshop",
+    "WorkshopManager",
+    "WorkshopState",
     "MidiExporter",
     "export_to_midi",
     "ResourceController",

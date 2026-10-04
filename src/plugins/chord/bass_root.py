@@ -7,6 +7,7 @@ from dataclasses import asdict
 import numpy as np
 
 from src.analysis.chord import ChordEvent
+from src.audio.contracts import to_mono
 from src.kernel.core.resource_controller import ResourceController
 from src.plugins import Plugin
 
@@ -23,9 +24,13 @@ class BassRootPlugin(Plugin):
         return "2.0.0"
 
     def execute(self, rc: ResourceController, **kwargs) -> dict:
-        audio = rc.get_buffer("bass")
-        audio_mono = self._to_mono(audio)
-        sr = rc.get_metadata("sample_rate")
+        audio, sr = rc.get_audio_buffer("bass")
+        # New RC audio is channels-first. Older callers may still populate the
+        # generic buffer directly; retain that compatibility at this boundary.
+        try:
+            audio_mono = to_mono(audio)
+        except ValueError:
+            audio_mono = self._to_mono(audio)
         beat_timestamps = rc.get_metadata("beat_timestamps")
 
         if beat_timestamps is not None and len(beat_timestamps) >= 2:

@@ -173,8 +173,14 @@ class BTCSLChordPlugin(BasePlugin):
 
     def execute(self, rc: ResourceController, **kwargs) -> dict[str, Any]:
         stem_name = kwargs.get("stem_name", "piano")
-        audio = rc.get_buffer(stem_name)
-        sr = rc.get_metadata("sample_rate") or 22050
+        from src.audio.contracts import as_audio, to_mono
+
+        if hasattr(rc, "get_audio_buffer"):
+            audio, sr = rc.get_audio_buffer(stem_name)
+        else:
+            audio = rc.get_buffer(stem_name)
+            sr = rc.get_metadata("sample_rate") or 22050
+        audio = to_mono(as_audio(audio, int(sr)))
 
         # 1. CQT 特征提取（重采样到 22050，不归一化，由推理流水线内部处理）
         features = _extract_cqt_features(audio, sr)

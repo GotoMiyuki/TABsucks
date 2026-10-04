@@ -36,12 +36,18 @@ class ISMIR2019ChordPlugin(BasePlugin):
 
     def execute(self, rc: ResourceController, **kwargs) -> dict[str, Any]:
         stem_name = kwargs.get("stem_name", "piano")
-        audio = rc.get_buffer(stem_name)
-        sr = rc.get_metadata("sample_rate") or 22050
+        from src.audio.contracts import as_audio, to_mono
+
+        if hasattr(rc, "get_audio_buffer"):
+            audio, sr = rc.get_audio_buffer(stem_name)
+        else:
+            audio = rc.get_buffer(stem_name)
+            sr = rc.get_metadata("sample_rate") or 22050
+        audio = to_mono(as_audio(audio, int(sr)))
 
         # 1. 将音频数据写入一个临时文件
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp_wav:
-            sf.write(tmp_wav.name, audio, sr)
+            sf.write(tmp_wav.name, audio, sr, subtype="FLOAT")
             wav_path = tmp_wav.name
 
         # 2. 准备输出标签文件的临时路径
