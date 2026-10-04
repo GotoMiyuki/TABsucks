@@ -11,6 +11,7 @@ from queue import Empty
 import numpy as np
 import pytest
 
+from src.kernel.core.resource_controller import ResourceControllerError
 from src.kernel.core.workshop import MixState  # noqa: E402
 from src.kernel.kernel import EventBus, Kernel
 
@@ -166,6 +167,22 @@ class TestKernel:
         # 现在 wid 是 active；a 也还在 _workshops 里
         assert wid in [w["id"] for w in kernel_in_tmp.list_workshops()]
         assert a["id"] in [w["id"] for w in kernel_in_tmp.list_workshops()]
+
+    def test_close_releases_workshop_execution_context(
+        self,
+        kernel_in_tmp: Kernel,
+    ) -> None:
+        wid = kernel_in_tmp.create_workshop("Context")["id"]
+        old_context = kernel_in_tmp.orchestrator.get_context(wid)
+        old_context.rc.set_buffer("vocals", np.ones(4, dtype=np.float32))
+
+        assert kernel_in_tmp.close_workshop(wid)
+        assert kernel_in_tmp.switch_workshop(wid)
+
+        new_context = kernel_in_tmp.orchestrator.get_context(wid)
+        assert new_context is not old_context
+        with pytest.raises(ResourceControllerError):
+            new_context.rc.get_buffer("vocals")
 
     def test_close_then_persist_across_reboot(
         self, kernel_in_tmp: Kernel, tmp_path: Path

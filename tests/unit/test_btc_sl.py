@@ -2,23 +2,11 @@
 
 from __future__ import annotations
 
-import os
-import sys
-
 import numpy as np
 import pytest
-import torch
 
-# 将 ChordMini 的 src 注入 TABsucks 的 src 包路径
-_CHORDMINI_SRC = os.path.normpath(
-    os.path.join(os.path.dirname(__file__), "..", "..", "src", "plugins", "chord", "external", "chordmini", "src")
-)
-import src as _tabsucks_src
-if _CHORDMINI_SRC not in _tabsucks_src.__path__:
-    _tabsucks_src.__path__.insert(0, _CHORDMINI_SRC)
-
-from src.plugins.chord.btc_sl import idx2voca_chord, _run_length_encode
 from src.kernel.core.resource_controller import ResourceController
+from src.plugins.chord.btc_sl import _run_length_encode, idx2voca_chord
 
 
 class TestIdx2VocaChord:
@@ -100,8 +88,11 @@ class TestBTCSLChordPluginExecute:
         from src.plugins.chord.btc_sl import _setup_chordmini_imports
         _setup_chordmini_imports()
 
-        from src.models.btc_model import BTC_model
-        from src.models.common.config import ModelConfig
+        try:
+            from src.models.btc_model import BTC_model
+            from src.models.common.config import ModelConfig
+        except ModuleNotFoundError:
+            pytest.skip("ChordMini git submodule is not initialized")
 
         config = ModelConfig()
         mock_model = BTC_model(config=config)

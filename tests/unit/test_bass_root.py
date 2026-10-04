@@ -4,11 +4,10 @@ from __future__ import annotations
 
 import sys
 import types
-from dataclasses import asdict
+from unittest.mock import MagicMock
 
 import numpy as np
 import pytest
-from unittest.mock import MagicMock
 
 from src.analysis.chord import ChordEvent
 from src.kernel.core.resource_controller import ResourceController
@@ -23,6 +22,13 @@ def _make_mock_librosa(pyin_return=None):
         "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"
     ][int(round(midi)) % 12]
     mock.times_like = lambda x, sr=22050, hop_length=512: np.arange(len(x)) * hop_length / sr
+    mock.onset = types.SimpleNamespace(
+        onset_strength=MagicMock(return_value=np.array([], dtype=float))
+    )
+    mock.beat = types.SimpleNamespace(
+        beat_track=MagicMock(return_value=(0.0, np.array([], dtype=int)))
+    )
+    mock.frames_to_time = lambda frames, sr=22050: np.asarray(frames, dtype=float)
     if pyin_return is not None:
         mock.pyin = MagicMock(return_value=pyin_return)
     else:
@@ -98,8 +104,6 @@ class TestDetectProgression:
         # beat 时间戳: 0.0, 0.5, 1.0, 1.5, 2.0
         beat_timestamps = [0.0, 0.5, 1.0, 1.5, 2.0]
 
-        # 帧时间: 0, 0.023, 0.046, ... (hop=512, sr=22050)
-        frame_times = np.arange(n_frames) * 512 / sr
         f0 = np.zeros(n_frames)
         voiced = np.zeros(n_frames, dtype=bool)
 
@@ -224,9 +228,9 @@ class TestExecute:
 
             result = plugin.execute(rc)
             assert result["status"] == "success"
-            assert "root" in result
-            assert "bass_progression" in result
-            assert isinstance(result["bass_progression"], list)
+            assert "root" in result["data"]
+            assert "bass_progression" in result["data"]
+            assert isinstance(result["data"]["bass_progression"], list)
         finally:
             del sys.modules["librosa"]
 
@@ -248,8 +252,8 @@ class TestExecute:
             # 不设置 beat_timestamps
 
             result = plugin.execute(rc)
-            assert result["root"] == "A"
-            assert result["bass_progression"] == []
+            assert result["data"]["root"] == "A"
+            assert result["data"]["bass_progression"] == []
         finally:
             del sys.modules["librosa"]
 
