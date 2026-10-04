@@ -328,6 +328,37 @@ class TestStartSeparation:
         assert result["status"] == "success"
         assert progress == [0.25]
 
+    def test_measured_mode_does_not_advance_a_silent_plugin(self) -> None:
+        class SlowPlugin:
+            def execute(self, rc, **kwargs):
+                time.sleep(.16)
+                return {"status": "success"}
+
+        progress = []
+        result = asyncio.run(call_plugin_execute_async(
+            SlowPlugin(), None, measured_progress=True, progress_interval_sec=.05,
+            progress_callback=progress.append,
+        ))
+        assert result["status"] == "success"
+        assert progress == []
+
+    def test_measured_stage_metadata_and_fraction_reset_are_forwarded(self) -> None:
+        class Plugin:
+            def execute(self, rc, **kwargs):
+                cb = kwargs["progress_callback"]
+                cb(None, stage="loading_model")
+                cb(1, stage="separating_audio", completed=2, total=2, unit="chunks")
+                cb(0, stage="saving_results", completed=0, total=6, unit="stems")
+                return {"status": "success"}
+
+        progress = []
+        asyncio.run(call_plugin_execute_async(
+            Plugin(), None, measured_progress=True,
+            progress_callback=lambda value, **details: progress.append((value, details)),
+        ))
+        assert [item[0] for item in progress] == [None, 1, 0]
+        assert [item[1]["stage"] for item in progress] == ["loading_model", "separating_audio", "saving_results"]
+
 
 class TestStartAnalysis:
     def test_emits_done_with_chords(self) -> None:

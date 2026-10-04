@@ -49,3 +49,6 @@ Thumbs.db
 
 # Generated Windows release assets
 packaging/ffmpeg/
+# Isolated frontend preview and regression scratch data
+.workbench-preview*/
+.pytest-workbench*/

@@ -138,8 +138,30 @@ class PluginManager:
         for manifest in self._manifests.values():
             if phase is not None and manifest.get("phase") != phase:
                 continue
-            result.append({k: v for k, v in manifest.items() if not k.startswith("_")})
+            entry = {k: v for k, v in manifest.items() if not k.startswith("_")}
+            requirements = manifest.get("requirements", {})
+            if requirements.get("required_files") or requirements.get("required_file_groups"):
+                errors = self._asset_errors(manifest)
+                entry["assets_ready"] = not errors
+                entry["unavailable_reason"] = "; ".join(errors) if errors else None
+            result.append(entry)
         return result
+
+    def _asset_errors(self, manifest: dict[str, Any]) -> list[str]:
+        """Check manifest-relative resources without importing or allocating a model."""
+        requirements = manifest.get("requirements", {})
+        base = Path(manifest.get("_manifest_dir", self._src_dir()))
+        missing = [path for path in requirements.get("required_files", [])
+                   if not (base / path).is_file()]
+        errors = []
+        if missing:
+            errors.append("缺少插件资源: " + ", ".join(missing))
+        for alternatives in requirements.get("required_file_groups", []):
+            if not any((base / path).is_file() for path in alternatives):
+                errors.append("缺少模型权重（任选其一）: " + ", ".join(alternatives))
+        if errors and requirements.get("asset_setup_hint"):
+            errors.append(requirements["asset_setup_hint"])
+        return errors
 
     # ------------------------------------------------------------------
     # Manifest-backed plugin instantiation
@@ -222,7 +244,8 @@ class PluginManager:
         required_packages = list(reqs.get("python_packages", []) or [])
 
         warnings: list[str] = []
-        errors: list[str] = []
+        asset_errors = self._asset_errors(manifest)
+        errors: list[str] = list(asset_errors)
 
         gpu_info = self._rc.get_gpu_info()
         gpu_free_mb = gpu_info["free_mb"]
@@ -267,6 +290,7 @@ class PluginManager:
 
         return {
             "compatible": compatible,
+            "assets_ready": not asset_errors,
             "gpu_available": gpu_available,
             "gpu_free_mb": gpu_free_mb,
             "gpu_required_mb": gpu_required_mb,

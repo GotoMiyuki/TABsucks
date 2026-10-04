@@ -178,19 +178,20 @@ const api = {
         );
     },
 
-    async getVisualization(wid, track = 'full') {
+    async getVisualization(wid, track = 'full', resultId = null) {
         return this._fetchJSON(
-            `${this._baseURL}/workshops/${wid}/visualization?track=${encodeURIComponent(track)}`
+            `${this._baseURL}/workshops/${wid}/visualization?track=${encodeURIComponent(track)}${resultId ? `&result_id=${encodeURIComponent(resultId)}` : ''}`
         );
     },
 
-    getAudioURL(wid, track) {
-        return `${this._baseURL}/workshops/${wid}/audio/${encodeURIComponent(track)}`;
+    getAudioURL(wid, track, download = false, version = '') {
+        return `${this._baseURL}/workshops/${wid}/audio/${encodeURIComponent(track)}?download=${download}${version ? `&v=${encodeURIComponent(version)}` : ''}`;
     },
 
-    async exportMidi(wid, tracks) {
+    async exportMidi(wid, tracks, resultIds = []) {
         const query = new URLSearchParams();
         for (const track of tracks) query.append('tracks', track);
+        for (const ref of resultIds) query.append('result_ids', ref);
         try {
             const response = await fetch(
                 `${this._baseURL}/workshops/${wid}/midi?${query}`

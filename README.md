@@ -46,14 +46,22 @@ TABsucks 是一个核心分析在本机执行、离线优先的智能音乐应�
 
 ## 核心功能
 
-### 四个 Tab，串起一条完整工作流
+### 音乐工作台
 
-| Tab | 能力 |
+| 工作区 | 能力 |
 |---|---|
-| **Tab1 · 输入** | 创建/切换音乐车间，上传本地音频或通过 URL 获取音频 |
-| **Tab2 · 分离** | 选择分离模型和 CPU/GPU 设备，生成六类音轨并查看进度 |
-| **Tab3 · 分析** | 为不同音轨选择和弦、节奏、Bass 等分析插件 |
-| **Tab4 · 播放与可视化** | 查看波形、和弦、节拍，控制播放、变速、循环、静音和独奏 |
+| **导入音频** | 本地选择或拖放文件、链接导入；项目重命名、关闭与删除 |
+| **分离设置** | 选择模型和 CPU/GPU 设备，查看进度并取消任务 |
+| **分析设置** | 为加入分析的音轨选择适配的和弦插件，逐轨或串行批量分析 |
+| **音轨工作台** | 原曲/分轨试听、波形与和弦、静音/独奏/音量、变速、A–B 循环、音轨下载与部分 MIDI 导出 |
+
+桌面界面随系统切换深浅主题。原曲导入后即可试听，分轨试听与下载无需先分析；打开设置面板不重置播放器。
+“加入分析”独立于试听混音。MIDI 导出的是当前显示的有效和弦结果，不是完整音符转录。
+播放位置、混音、倍速和循环按项目保留在当前页面会话内；刷新后默认暂停并重置练习设置。
+现有项目目录和 Tab1–Tab4 存储格式保持兼容。
+
+开发验收预览可运行 `python scripts/workbench_preview.py --seed --port 8012`，使用独立测试目录和生成音频，不读取用户项目。
+详见 [改造方案](docs/frontend-redesign-plan.md) 和 [开发及验证记录](docs/frontend-redesign-implementation.md)。
 
 ### 工程能力
 
@@ -100,7 +108,7 @@ Windows 发行包采用分层安装：
 项目推荐使用 64 位 Python 3.10 虚拟环境。
 
 ```powershell
-git clone https://github.com/GotoMiyuki/TABsucks.git
+git clone --recurse-submodules https://github.com/GotoMiyuki/TABsucks.git
 cd TABsucks
 
 python -m venv .venv
@@ -112,6 +120,16 @@ python -m pip install -r requirements.txt
 # 启动本地 Web 服务
 python -m src.ui
 ```
+
+已经检出的仓库需要补齐 ChordMini 子模块及其随附的 BTC 权重：
+
+```powershell
+git submodule update --init -- src/plugins/chord/external/chordmini
+```
+
+BTC-SL 使用锁定版本的模型与滑窗推理代码，和 TABsucks 的 Python 包隔离加载。
+源码运行只需项目依赖清单中的推理依赖；无需安装 ChordMini 的整套训练、评估和绘图库。
+分析模型列表会检查 BTC-SL 源码和权重，缺少资源时显示“资源未就绪”并停用该选项。
 
 服务默认监听：
 
@@ -145,6 +163,21 @@ ONNX Runtime GPU 1.23.2
 ```
 
 GPU 推理仍需要用户安装兼容的 NVIDIA 显卡驱动。GPU 版本不保证所有插件都使用 GPU，插件自身只支持 CPU 时会自动回退。
+
+RTX 50 系列（Blackwell）源码环境使用单独的 CUDA 12.8 配置，不叠加上面的旧构建约束：
+
+```powershell
+# 已安装 CPU 版 ONNX Runtime 时先卸载，避免与 GPU 包覆盖同一个模块
+python -m pip uninstall -y onnxruntime
+python -m pip install -r requirements-gpu-blackwell.txt
+python -c "import torch; print(torch.__version__, torch.cuda.is_available(), torch.cuda.get_device_name(0))"
+```
+
+本机 RTX 5070 Laptop 环境使用 Python 3.12、PyTorch 2.7.1+cu128、
+torchaudio 2.7.1+cu128、torchvision 0.22.1+cu128 和 ONNX Runtime GPU 1.23.2。
+CUDA/cuDNN 运行库由上述 wheel 提供；本项目推理无需另装 CUDA Toolkit。
+[PyTorch 官方版本配套](https://pytorch.org/get-started/previous-versions/)和
+[Blackwell 支持说明](https://pytorch.org/blog/pytorch-2-7/)。
 
 ## 发行结构
 

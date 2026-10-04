@@ -7,7 +7,7 @@
 from __future__ import annotations
 
 import os
-import sys
+import logging
 from typing import Any
 
 import numpy as np
@@ -16,24 +16,20 @@ import torch
 from src.plugins import BasePlugin
 from src.kernel.core.resource_controller import ResourceController
 
-# ---------- 路径设置：将 ChordMini 子模块加入 sys.path ----------
+logger = logging.getLogger(__name__)
+
+# ---------- ChordMini 子模块资源路径 ----------
 _EXTERNAL_DIR = os.path.join(os.path.dirname(__file__), "external", "chordmini")
 _CHORDMINI_SRC = os.path.join(_EXTERNAL_DIR, "src")
-if _CHORDMINI_SRC not in sys.path:
-    sys.path.insert(0, _CHORDMINI_SRC)
 
 _CHECKPOINTS_DIR = os.path.join(_EXTERNAL_DIR, "checkpoints")
 
 
 def _setup_chordmini_imports():
-    """将 ChordMini 的 src 目录注入 TABsucks 的 src 包路径，解决命名空间冲突。
+    """加载独立命名空间中的 BTC 推理代码，保留主程序的包路径。"""
+    from src.plugins.chord.chordmini_runtime import load_btc_runtime
 
-    TABsucks 和 ChordMini 都使用 ``src`` 作为顶层包名。通过扩展
-    ``src.__path__`` 使 ``src.models`` 等子模块能从 ChordMini 目录中被找到。
-    """
-    import src as _tabsucks_src
-    if _CHORDMINI_SRC not in _tabsucks_src.__path__:
-        _tabsucks_src.__path__.insert(0, _CHORDMINI_SRC)
+    return load_btc_runtime(_CHORDMINI_SRC)
 
 
 # 延迟导入，避免在模块加载时就触发子模块依赖
@@ -46,24 +42,17 @@ _extract_state_dict_and_stats = None
 def _ensure_imports():
     global _BTC_model_cls, _ModelConfig_cls
     global _predict_sliding_windows, _extract_state_dict_and_stats
-    _setup_chordmini_imports()
-    if _BTC_model_cls is None:
-        from src.models.btc_model import BTC_model
-        from src.models.common.config import ModelConfig
-        _BTC_model_cls = BTC_model
-        _ModelConfig_cls = ModelConfig
-    if _predict_sliding_windows is None:
-        import importlib.util
-        _inf_path = os.path.join(_CHORDMINI_SRC, "evaluation", "utils", "inference.py")
-        # 直接从文件导入，避免 evaluation/utils/__init__.py 拉入 librosa
-        _mod_name = f"_chordmini_inference_{id(_inf_path)}"
-        spec = importlib.util.spec_from_file_location(_mod_name, _inf_path)
-        _mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(_mod)
-        _predict_sliding_windows = _mod.predict_sliding_windows
-    if _extract_state_dict_and_stats is None:
-        from src.utils.checkpoint_utils import extract_state_dict_and_stats
-        _extract_state_dict_and_stats = extract_state_dict_and_stats
+    if all(value is not None for value in (
+        _BTC_model_cls, _ModelConfig_cls, _predict_sliding_windows, _extract_state_dict_and_stats,
+    )):
+        return
+    runtime = _setup_chordmini_imports()
+    from src.utils.checkpoint_utils import extract_state_dict_and_stats
+
+    _BTC_model_cls = runtime.model_class
+    _ModelConfig_cls = runtime.config_class
+    _predict_sliding_windows = runtime.predict_sliding_windows
+    _extract_state_dict_and_stats = extract_state_dict_and_stats
 
 
 # ---------- 170 类词汇表 ----------
@@ -154,7 +143,7 @@ class BTCSLChordPlugin(BasePlugin):
     获取音频 buffer 进行推理，输出 ``{"start", "end", "chord"}`` 格式。
 
     支持高级推理流水线：滑动窗口 + 重叠投票 + 时序平滑。
-    默认加载 ChordMini CL 训练的 ``btc_model_best.pth``。
+    默认加载原始 Teacher ``btc_model_large_voca.pt``，缺失时选择 CL 训练权重。
     """
 
     # 默认 checkpoint 优先级：原始 Teacher（已验证可用）> CL 训练版（epoch 2 欠训练，待更多轮次后启用）
@@ -182,14 +171,14 @@ class BTCSLChordPlugin(BasePlugin):
             sr = rc.get_metadata("sample_rate") or 22050
         audio = to_mono(as_audio(audio, int(sr)))
 
-        # 1. CQT 特征提取（重采样到 22050，不归一化，由推理流水线内部处理）
+        # 1. 检查源码和权重、加载模型；缺失资源时在提取特征之前失败。
+        checkpoint_path = kwargs.get("checkpoint")
+        model, mean, std = self._init_model(rc, checkpoint_path=checkpoint_path)
+
+        # 2. CQT 特征提取（重采样到 22050，不归一化，由推理流水线内部处理）
         features = _extract_cqt_features(audio, sr)
         # CQT 使用 22050 Hz；修正 sr 以保证 _run_length_encode 时间戳正确
         cqt_sr = 22050
-
-        # 2. 加载模型
-        checkpoint_path = kwargs.get("checkpoint")
-        model, mean, std = self._init_model(rc, checkpoint_path=checkpoint_path)
 
         # 3. 高级推理流水线（滑动窗口 + 重叠投票 + 时序平滑）
         device = rc.get_current_device() if hasattr(rc, "get_current_device") else "cpu"
@@ -229,7 +218,7 @@ class BTCSLChordPlugin(BasePlugin):
 
         config = _ModelConfig_cls()
         model = _BTC_model_cls(config=config)
-        model.load_state_dict(state_dict, strict=False)
+        model.load_state_dict(state_dict, strict=True)
         model.eval()
 
         device = rc.get_current_device() if hasattr(rc, "get_current_device") else "cpu"
@@ -237,13 +226,15 @@ class BTCSLChordPlugin(BasePlugin):
 
         result = (model, mean, std)
         rc.set_metadata(cache_key, result)
+        logger.info("BTC-SL loaded %s on %s (%d tensors)",
+                    os.path.basename(checkpoint_path), device, len(state_dict))
         return result
 
     @classmethod
     def _resolve_checkpoint_path(cls) -> str:
         for path in cls._DEFAULT_CHECKPOINT_CANDIDATES:
             path = os.path.normpath(path)
-            if os.path.exists(path):
+            if os.path.isfile(path):
                 return path
         raise FileNotFoundError(
             f"BTC-SL 权重文件不存在，已检查: {cls._DEFAULT_CHECKPOINT_CANDIDATES}"
